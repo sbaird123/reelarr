@@ -47,14 +47,8 @@
         </div>
       </header>
 
-      <nav id="arr-tabs" role="tablist">
-        <button class="arr-tab active" data-tab="general" role="tab">General</button>
-        <button class="arr-tab" data-tab="applications" role="tab">Applications</button>
-      </nav>
-
       <section id="arr-content">
         <!-- General ─────────────────────────────────────────────────────── -->
-        <div class="tab-panel" data-panel="general">
           <div class="arr-panel">
             <div class="arr-panel-header">
               <h2>TMDB (The Movie Database)</h2>
@@ -82,128 +76,6 @@
               </div>
             </div>
           </div>
-        </div>
-
-        <!-- Applications ─────────────────────────────────────────────────── -->
-        <div class="tab-panel hidden" data-panel="applications">
-
-          <div class="arr-panel">
-            <div class="arr-panel-header">
-              <h2><span class="arr-chip arr-chip-red">Radarr</span> Movies</h2>
-              <div class="arr-panel-sub">One-click add movies to your Radarr library</div>
-            </div>
-            <div class="arr-panel-body">
-              <div class="form-row">
-                <div class="form-label">
-                  <label for="radarr_url">URL</label>
-                  <div class="form-help">e.g. <code>http://radarr:7878</code> or <code>http://192.168.1.10:7878</code></div>
-                </div>
-                <div class="form-input">
-                  <input type="text" id="radarr_url" placeholder="http://localhost:7878" autocomplete="off" />
-                </div>
-              </div>
-              <div class="form-row">
-                <div class="form-label">
-                  <label for="radarr_api_key">API Key</label>
-                  <div class="form-help">Radarr → Settings → General → Security</div>
-                </div>
-                <div class="form-input">
-                  <div class="input-with-action">
-                    <input type="password" id="radarr_api_key" placeholder="Radarr API key" autocomplete="off" />
-                    <button type="button" class="arr-btn arr-btn-ghost show-pw" data-target="radarr_api_key" title="Show/hide">👁</button>
-                  </div>
-                  <div class="form-test">
-                    <button type="button" class="arr-btn" id="test-radarr">Test</button>
-                    <span class="test-result" id="test-radarr-result"></span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div class="arr-panel">
-            <div class="arr-panel-header">
-              <h2><span class="arr-chip arr-chip-purple">Jellyfin</span> Play On</h2>
-              <div class="arr-panel-sub">Enable the Library tab and beam trailers → watch straight on your TV via Jellyfin's remote-control API.</div>
-            </div>
-            <div class="arr-panel-body">
-              <div class="form-row">
-                <div class="form-label">
-                  <label for="jellyfin_url">URL</label>
-                  <div class="form-help">e.g. <code>http://jellyfin:8096</code> or <code>http://192.168.1.10:8096</code></div>
-                </div>
-                <div class="form-input">
-                  <input type="text" id="jellyfin_url" placeholder="http://jellyfin:8096" autocomplete="off" />
-                </div>
-              </div>
-              <div class="form-row">
-                <div class="form-label">
-                  <label for="jellyfin_api_key">API Key</label>
-                  <div class="form-help">Jellyfin → Dashboard → API Keys → New</div>
-                </div>
-                <div class="form-input">
-                  <div class="input-with-action">
-                    <input type="password" id="jellyfin_api_key" placeholder="Jellyfin API key" autocomplete="off" />
-                    <button type="button" class="arr-btn arr-btn-ghost show-pw" data-target="jellyfin_api_key" title="Show/hide">👁</button>
-                  </div>
-                  <div class="form-test">
-                    <button type="button" class="arr-btn" id="test-jellyfin">Test</button>
-                    <span class="test-result" id="test-jellyfin-result"></span>
-                  </div>
-                </div>
-              </div>
-              <div class="form-row">
-                <div class="form-label">
-                  <label for="jellyfin_session_id">Play On device</label>
-                  <div class="form-help">The client that'll start playing when you tap ▶ Play. Open Jellyfin on the device first so it appears in the list, then hit Refresh.</div>
-                </div>
-                <div class="form-input">
-                  <div class="input-with-action">
-                    <select id="jellyfin_session_id">
-                      <option value="">— none selected —</option>
-                    </select>
-                    <button type="button" class="arr-btn" id="refresh-jellyfin-sessions">Refresh</button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div class="arr-panel">
-            <div class="arr-panel-header">
-              <h2><span class="arr-chip arr-chip-blue">Sonarr</span> TV</h2>
-              <div class="arr-panel-sub">One-click add shows to your Sonarr library. No TVDB key needed here — TMDB provides the TVDB IDs Sonarr uses.</div>
-            </div>
-            <div class="arr-panel-body">
-              <div class="form-row">
-                <div class="form-label">
-                  <label for="sonarr_url">URL</label>
-                  <div class="form-help">e.g. <code>http://sonarr:8989</code></div>
-                </div>
-                <div class="form-input">
-                  <input type="text" id="sonarr_url" placeholder="http://localhost:8989" autocomplete="off" />
-                </div>
-              </div>
-              <div class="form-row">
-                <div class="form-label">
-                  <label for="sonarr_api_key">API Key</label>
-                  <div class="form-help">Sonarr → Settings → General → Security</div>
-                </div>
-                <div class="form-input">
-                  <div class="input-with-action">
-                    <input type="password" id="sonarr_api_key" placeholder="Sonarr API key" autocomplete="off" />
-                    <button type="button" class="arr-btn arr-btn-ghost show-pw" data-target="sonarr_api_key" title="Show/hide">👁</button>
-                  </div>
-                  <div class="form-test">
-                    <button type="button" class="arr-btn" id="test-sonarr">Test</button>
-                    <span class="test-result" id="test-sonarr-result"></span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-        </div>
       </section>
     </main>
   </div>

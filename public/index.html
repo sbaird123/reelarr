@@ -24,12 +24,10 @@
     <div id="mode-toggle">
       <button class="mode-btn active" data-mode="movies">Movies</button>
       <button class="mode-btn" data-mode="tv">TV</button>
-      <button class="mode-btn" data-mode="library">Library</button>
     </div>
-    <select id="mode-select" class="topbar-select" aria-label="Movies, TV, or Library">
+    <select id="mode-select" class="topbar-select" aria-label="Movies or TV">
       <option value="movies">Movies</option>
       <option value="tv">TV</option>
-      <option value="library">Library</option>
     </select>
     <div id="nav-tabs">
       <!-- tabs injected by JS -->
@@ -59,23 +57,6 @@
   <div class="swiper" id="main-swiper">
     <div class="swiper-wrapper" id="swiper-wrapper">
       <!-- slides injected by JS -->
-    </div>
-  </div>
-
-  <!-- Add to Radarr modal -->
-  <div id="modal-overlay" class="hidden">
-    <div id="modal">
-      <h2 id="modal-title"></h2>
-      <label>Quality Profile
-        <select id="modal-quality"></select>
-      </label>
-      <label>Root Folder
-        <select id="modal-folder"></select>
-      </label>
-      <div id="modal-actions">
-        <button id="modal-cancel">Cancel</button>
-        <button id="modal-confirm">Add</button>
-      </div>
     </div>
   </div>
 
