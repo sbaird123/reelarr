@@ -48,6 +48,10 @@ Open <http://localhost:3000/settings> and plug in:
 
 Hit **Test** next to each one, then **Save Changes**. Visit `/` and start swiping.
 
+### Security note
+
+Peekarr has **no authentication** — like most *arr apps, anyone who can reach the port can browse, change settings, and read the stored API keys. Keep it on a trusted LAN or VPN; if you want it reachable from outside, put it behind a reverse proxy with auth (Authelia, basic auth, Tailscale, etc.). Don't port-forward it to the internet.
+
 ### Running in the same stack as Radarr/Sonarr
 
 Use the Docker service name as the URL — e.g. `http://radarr:7878` and `http://sonarr:8989`. Make sure all containers share a Docker network.

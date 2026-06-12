@@ -7,6 +7,16 @@ function shuffle(arr) {
   return arr;
 }
 
+// Titles/overviews come from TMDB, which is user-editable — escape anything
+// that lands in innerHTML.
+function escapeHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 // ── Swipe history (localStorage) ─────────────────────────────────────────────
 const HISTORY_KEY = 'peekarr_skips';
 const MAX_HISTORY = 500;
@@ -15,17 +25,20 @@ function loadHistory() {
   try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '{}'); } catch { return {}; }
 }
 function saveHistory(h) { localStorage.setItem(HISTORY_KEY, JSON.stringify(h)); }
-function recordSkip(tmdbId) {
+// Keys are namespaced by media type — movie and TV ids live in separate TMDB
+// namespaces, so a bare numeric id can collide across them.
+function recordSkip(tmdbId, mediaType) {
   const h = loadHistory();
-  h[tmdbId] = (h[tmdbId] || 0) + 1;
+  const key = watchedKey(tmdbId, mediaType);
+  h[key] = (h[key] || 0) + 1;
   const keys = Object.keys(h);
   if (keys.length > MAX_HISTORY) {
     keys.sort((a, b) => h[a] - h[b]).slice(0, keys.length - MAX_HISTORY).forEach((k) => delete h[k]);
   }
   saveHistory(h);
 }
-function skipProbability(tmdbId) {
-  const count = loadHistory()[tmdbId] || 0;
+function skipProbability(tmdbId, mediaType) {
+  const count = loadHistory()[watchedKey(tmdbId, mediaType)] || 0;
   if (count === 0) return 0;
   return Math.min(0.8, 1 - Math.pow(0.7, count));
 }
@@ -253,7 +266,7 @@ function buildSlide(item, index) {
   slide.dataset.tmdbId = item.id;
   slide.dataset.mediaType = item.media_type || 'movie';
 
-  const safeTitle = (item.title || '').replace(/"/g, '&quot;');
+  const safeTitle = escapeHtml(item.title);
   const year = item.release_date ? item.release_date.slice(0, 4) : '';
   const inLibraryMode = currentMode === 'library';
   const btnClass = inLibraryMode ? 'btn-play' : (isTv ? 'btn-sonarr' : 'btn-radarr');
@@ -276,13 +289,13 @@ function buildSlide(item, index) {
       </div>
     </div>
     <div class="slide-info">
-      <div class="slide-title">${item.title}</div>
+      <div class="slide-title">${safeTitle}</div>
       <div class="slide-meta">
         <span class="rating">&#9733; ${item.vote_average ? item.vote_average.toFixed(1) : 'N/A'}</span>
         <span>${year}</span>
         ${isTv ? '<span class="media-badge">TV</span>' : ''}
       </div>
-      <div class="slide-overview">${item.overview || ''}</div>
+      <div class="slide-overview">${escapeHtml(item.overview)}</div>
       <div class="slide-actions">
         <button class="${btnClass}" data-tmdb-id="${item.id}" data-title="${safeTitle}" data-year="${year}" data-media-type="${item.media_type || 'movie'}">
           ${btnLabel}
@@ -318,7 +331,7 @@ function buildSlide(item, index) {
   });
 
   slide.querySelector('.btn-skip').addEventListener('click', () => {
-    recordSkip(item.id);
+    recordSkip(item.id, item.media_type);
     advanceOrLoad();
   });
 
@@ -582,14 +595,24 @@ async function loadFeed(reset = false) {
         : `/api/feed?list=${currentList}`;
 
       if (reset) {
-        const page2 = fetchPage + 1;
-        const [r1, r2] = await Promise.all([
+        let [r1, r2] = await Promise.all([
           fetch(`${base}&page=${fetchPage}`, { signal }).then((r) => r.json()),
-          fetch(`${base}&page=${page2}`, { signal }).then((r) => r.json()),
+          fetch(`${base}&page=${fetchPage + 1}`, { signal }).then((r) => r.json()),
         ]);
         if (r1.error) throw new Error(r1.error);
+        // Random start can overshoot a short list (or land on pages the server
+        // filtered to nothing, e.g. already-released "upcoming" movies). Don't
+        // strand the user on a blank feed — fall back to the front.
+        if (fetchPage > 1 && !(r1.results || []).length && !(r2.results || []).length) {
+          fetchPage = 1;
+          [r1, r2] = await Promise.all([
+            fetch(`${base}&page=1`, { signal }).then((r) => r.json()),
+            fetch(`${base}&page=2`, { signal }).then((r) => r.json()),
+          ]);
+          if (r1.error) throw new Error(r1.error);
+        }
         newTotalPages = r1.total_pages;
-        nextPage = page2 + 1;
+        nextPage = fetchPage + 2;
         results = shuffle([...(r1.results || []), ...(r2.results || [])]);
       } else {
         const r = await fetch(`${base}&page=${currentPage}`, { signal }).then((r) => r.json());
@@ -615,7 +638,7 @@ async function loadFeed(reset = false) {
 
     const filtered = results.filter((item) =>
       !watchedSet.has(watchedKey(item.id, item.media_type)) &&
-      Math.random() >= skipProbability(item.id)
+      Math.random() >= skipProbability(item.id, item.media_type)
     );
     const startIndex = itemCache.length;
     itemCache.push(...filtered);
@@ -678,8 +701,12 @@ function initSwiper() {
         const item = itemCache[idx];
         if (!item) return;
 
-        const prev = itemCache[idx - 1];
-        if (prev) recordSkip(prev.id);
+        // Only a forward swipe counts as skipping the slide we left — swiping
+        // back to rewatch something shouldn't penalize the slide before it.
+        if (s.previousIndex < idx) {
+          const prev = itemCache[s.previousIndex];
+          if (prev) recordSkip(prev.id, prev.media_type);
+        }
 
         ensurePlayer(item, idx);
         autoPlaySlide(idx);
@@ -717,7 +744,7 @@ async function checkStatusBatch(items, signal) {
       .then((map) => {
         for (const id of Object.keys(map)) {
           const data = map[id];
-          if (data && data.exists) markBtn(id, data.hasFile ? 'In Library' : 'In Radarr', 'exists');
+          if (data && data.exists) markBtn(id, 'movie', data.hasFile ? 'In Library' : 'In Radarr', 'exists');
         }
       })
       .catch(() => {}));
@@ -735,7 +762,7 @@ async function checkStatusBatch(items, signal) {
           const data = map[tvdbId];
           if (!data || !data.exists) continue;
           const item = items.find((i) => String(i.tvdb_id) === String(tvdbId));
-          if (item) markBtn(item.id, data.hasFile ? 'In Library' : 'In Sonarr', 'exists');
+          if (item) markBtn(item.id, 'tv', data.hasFile ? 'In Library' : 'In Sonarr', 'exists');
         }
       })
       .catch(() => {}));
@@ -744,9 +771,11 @@ async function checkStatusBatch(items, signal) {
   await Promise.all(requests);
 }
 
-function markBtn(tmdbId, label, cls) {
+// Scope by media type too — a movie and a TV show can share the same numeric
+// TMDB id (separate namespaces), and we mustn't disable the wrong button.
+function markBtn(tmdbId, mediaType, label, cls) {
   ['.btn-radarr', '.btn-sonarr', '.search-add-btn'].forEach((sel) => {
-    document.querySelectorAll(`${sel}[data-tmdb-id="${tmdbId}"]`).forEach((btn) => {
+    document.querySelectorAll(`${sel}[data-tmdb-id="${tmdbId}"][data-media-type="${mediaType}"]`).forEach((btn) => {
       btn.textContent = label;
       btn.classList.add(cls);
       btn.disabled = true;
@@ -846,7 +875,7 @@ document.getElementById('modal-confirm').addEventListener('click', async () => {
 
     const service = isTv ? 'Sonarr' : 'Radarr';
     toast(`"${pendingItem.title}" added to ${service}!`);
-    markBtn(pendingItem.id, `In ${service}`, 'exists');
+    markBtn(pendingItem.id, isTv ? 'tv' : 'movie', `In ${service}`, 'exists');
   } catch (err) {
     toast('Failed: ' + err.message);
   } finally {
@@ -933,10 +962,10 @@ function renderSearchResults(items) {
     const card = document.createElement('div');
     card.className = 'search-card';
     card.innerHTML = `
-      <img class="search-poster" src="${item.poster_path || ''}" alt="" loading="lazy" onerror="this.style.background='#222';this.src=''" />
+      <img class="search-poster" src="${escapeHtml(item.poster_path)}" alt="" loading="lazy" onerror="this.onerror=null;this.style.background='#222';this.removeAttribute('src')" />
       <div class="search-info">
-        <h3>${item.title}</h3>
-        <p>${item.overview || ''}</p>
+        <h3>${escapeHtml(item.title)}</h3>
+        <p>${escapeHtml(item.overview)}</p>
       </div>
       <button class="search-add-btn ${isTv ? 'sonarr' : ''}" data-tmdb-id="${item.id}" data-media-type="${item.media_type || 'movie'}">
         + ${isTv ? 'Sonarr' : 'Radarr'}
@@ -987,6 +1016,13 @@ function injectItem(item) {
   players = newPlayers;
   playerReady = newReady;
 
+  // Shift pending stall watchdogs too, or one could kick the wrong player.
+  const newStall = {};
+  Object.keys(stallTimers).forEach((k) => {
+    newStall[parseInt(k) + 1] = stallTimers[k];
+  });
+  stallTimers = newStall;
+
   const newSlide = buildSlide(item, 0);
   wrapper.prepend(newSlide);
 
@@ -1005,7 +1041,7 @@ function hydrateInitial(payload) {
 
   const filtered = (payload.results || []).filter((item) =>
     !watchedSet.has(watchedKey(item.id, item.media_type)) &&
-    Math.random() >= skipProbability(item.id)
+    Math.random() >= skipProbability(item.id, item.media_type)
   );
   const list = shuffle([...filtered]);
   itemCache.push(...list);

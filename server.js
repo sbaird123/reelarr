@@ -172,8 +172,29 @@ async function tmdb(endpoint, params = {}, policy = POLICY_STATIC) {
   return promise;
 }
 
+// Same SWR pattern as tmdb(), for the small Radarr/Sonarr status entries:
+// serve cached until hardExpire, refresh in the background once past softExpire.
+async function swrStatus(ckey, fetcher) {
+  const cached = statusCache.get(ckey); // get() already drops hard-expired entries
+  if (cached) {
+    if (cached.softExpire <= Date.now() && !inFlight.has(ckey)) {
+      const p = fetcher()
+        .then((v) => { statusCache.set(ckey, v, POLICY_STATUS); inFlight.delete(ckey); })
+        .catch(() => { inFlight.delete(ckey); });
+      inFlight.set(ckey, p);
+    }
+    return cached.value;
+  }
+  if (inFlight.has(ckey)) return inFlight.get(ckey);
+  const promise = fetcher()
+    .then((v) => { statusCache.set(ckey, v, POLICY_STATUS); inFlight.delete(ckey); return v; })
+    .catch((err) => { inFlight.delete(ckey); throw err; });
+  inFlight.set(ckey, promise);
+  return promise;
+}
+
 // ── URL helpers ───────────────────────────────────────────────────────────────
-function normalizeUrl(u) { return (u || '').trim().replace(/\/$/, ''); }
+function normalizeUrl(u) { return (u || '').trim().replace(/\/+$/, ''); }
 function poster(p)   { return p ? `https://image.tmdb.org/t/p/w500${p}` : null; }
 function backdrop(p) { return p ? `https://image.tmdb.org/t/p/w780${p}` : null; }
 
@@ -497,20 +518,17 @@ async function radarr(method, endpoint, body) {
 }
 
 async function radarrStatusById(tmdbId) {
-  const ckey = `radarr:${tmdbId}`;
-  const cached = statusCache.get(ckey);
-  if (cached && cached.hardExpire > Date.now()) return cached.value;
-  // /movie?tmdbId=X filters the library directly — the external /movie/lookup/tmdb
-  // endpoint doesn't always populate the library id, so it mis-reports "not added".
-  const results = await radarr('GET', `/movie?tmdbId=${tmdbId}`);
-  const movie = Array.isArray(results) && results.length ? results[0] : null;
-  const status = {
-    exists: !!movie,
-    monitored: movie ? movie.monitored : false,
-    hasFile: movie ? !!movie.hasFile : false,
-  };
-  statusCache.set(ckey, status, POLICY_STATUS);
-  return status;
+  return swrStatus(`radarr:${tmdbId}`, async () => {
+    // /movie?tmdbId=X filters the library directly — the external /movie/lookup/tmdb
+    // endpoint doesn't always populate the library id, so it mis-reports "not added".
+    const results = await radarr('GET', `/movie?tmdbId=${tmdbId}`);
+    const movie = Array.isArray(results) && results.length ? results[0] : null;
+    return {
+      exists: !!movie,
+      monitored: movie ? movie.monitored : false,
+      hasFile: movie ? !!movie.hasFile : false,
+    };
+  });
 }
 
 app.get('/api/radarr/lookup/:tmdbId', async (req, res) => {
@@ -591,18 +609,15 @@ async function sonarr(method, endpoint, body) {
 }
 
 async function sonarrStatusByTvdb(tvdbId) {
-  const ckey = `sonarr:${tvdbId}`;
-  const cached = statusCache.get(ckey);
-  if (cached && cached.hardExpire > Date.now()) return cached.value;
-  const results = await sonarr('GET', `/series/lookup?term=tvdb:${tvdbId}`);
-  const show = Array.isArray(results) ? results[0] : results;
-  const status = {
-    exists: !!(show && show.id),
-    monitored: show ? show.monitored : false,
-    hasFile: show ? (show.statistics ? show.statistics.episodeFileCount > 0 : false) : false,
-  };
-  statusCache.set(ckey, status, POLICY_STATUS);
-  return status;
+  return swrStatus(`sonarr:${tvdbId}`, async () => {
+    const results = await sonarr('GET', `/series/lookup?term=tvdb:${tvdbId}`);
+    const show = Array.isArray(results) ? results[0] : results;
+    return {
+      exists: !!(show && show.id),
+      monitored: show ? show.monitored : false,
+      hasFile: show ? (show.statistics ? show.statistics.episodeFileCount > 0 : false) : false,
+    };
+  });
 }
 
 app.get('/api/sonarr/lookup/:tvdbId', async (req, res) => {
@@ -642,15 +657,19 @@ app.get('/api/sonarr/config', async (req, res) => {
 
 // ── Jellyfin routes ───────────────────────────────────────────────────────────
 async function jellyfin(method, endpoint, { body, query, overrideUrl, overrideKey } = {}) {
-  const base = normalizeUrl(overrideUrl || getSetting('jellyfin_url'));
-  const key  = overrideKey || getSetting('jellyfin_api_key');
+  // Overrides are all-or-nothing: never pair a caller-supplied URL with the
+  // saved API key, or the saved key would be sent to an arbitrary host.
+  const useOverride = overrideUrl !== undefined || overrideKey !== undefined;
+  const base = normalizeUrl(useOverride ? overrideUrl : getSetting('jellyfin_url'));
+  const key  = useOverride ? (overrideKey || '') : getSetting('jellyfin_api_key');
   if (!base || !key) throw new Error('Jellyfin not configured — open Settings → Applications');
   const qs = new URLSearchParams(query || {});
-  qs.set('api_key', key);
-  const url = `${base}${endpoint}?${qs.toString()}`;
+  const url = `${base}${endpoint}${qs.size ? `?${qs.toString()}` : ''}`;
   const opts = {
     method,
-    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    // Token goes in a header rather than the query string so it stays out of
+    // proxy/server access logs.
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-Emby-Token': key },
   };
   if (body) opts.body = JSON.stringify(body);
   const r = await fetchTimeout(url, opts, 6000);
@@ -840,26 +859,26 @@ async function getLibrary() {
   const fresh = libraryCache.items && now - libraryCache.builtAt < LIBRARY_TTL_MS;
   if (fresh) return libraryCache.items;
 
-  // Stale cache present — serve it immediately, refresh in the background so
-  // the user never waits through a second cold build.
-  if (libraryCache.items && !libraryCache.building) {
+  if (!libraryCache.building) {
     libraryCache.building = buildLibrary()
-      .then((items) => { libraryCache = { items, builtAt: Date.now(), building: null }; return items; })
-      .catch((err) => { libraryCache.building = null; console.warn('[library] refresh:', err.message); });
-    return libraryCache.items;
+      .then((items) => {
+        libraryCache = { items, builtAt: Date.now(), building: null };
+        return items;
+      })
+      .catch((err) => {
+        libraryCache.building = null;
+        // Stale items on hand → log and keep serving them; cold build → let
+        // the awaiting request see the failure.
+        if (libraryCache.items) {
+          console.warn('[library] refresh:', err.message);
+          return libraryCache.items;
+        }
+        throw err;
+      });
   }
-
-  if (libraryCache.building) return libraryCache.building;
-  libraryCache.building = buildLibrary()
-    .then((items) => {
-      libraryCache = { items, builtAt: Date.now(), building: null };
-      return items;
-    })
-    .catch((err) => {
-      libraryCache.building = null;
-      throw err;
-    });
-  return libraryCache.building;
+  // Stale items beat waiting on a rebuild — serve them immediately whether or
+  // not we kicked off the refresh ourselves.
+  return libraryCache.items || libraryCache.building;
 }
 
 // Cheap status probe so the UI can gray out modes/buttons for unconfigured
@@ -917,14 +936,17 @@ app.get('/api/watched/ids', (req, res) => {
 
 app.post('/api/watched', (req, res) => {
   const { tmdbId, mediaType = 'movie', title } = req.body;
-  if (!tmdbId) return res.status(400).json({ error: 'tmdbId required' });
-  stmtInsertWatched.run(tmdbId, mediaType, title || null);
+  const id = parseInt(tmdbId, 10);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'tmdbId required' });
+  stmtInsertWatched.run(id, mediaType, title || null);
   res.json({ ok: true });
 });
 
 app.delete('/api/watched/:tmdbId', (req, res) => {
+  const id = parseInt(req.params.tmdbId, 10);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'invalid tmdbId' });
   const { mediaType = 'movie' } = req.query;
-  stmtDeleteWatched.run(parseInt(req.params.tmdbId), mediaType);
+  stmtDeleteWatched.run(id, mediaType);
   res.json({ ok: true });
 });
 
@@ -958,8 +980,11 @@ app.post('/api/settings/test', async (req, res) => {
       const r = await fetchTimeout(`${TMDB}/configuration?api_key=${encodeURIComponent(key)}`, {}, 6000);
       if (!r.ok) throw new Error(`TMDB ${r.status}`);
     } else if (service === 'radarr' || service === 'sonarr') {
-      const base = normalizeUrl(url || getSetting(`${service}_url`));
-      const key  = apiKey || getSetting(`${service}_api_key`);
+      // Fall back to saved settings only when the caller supplied neither value
+      // — mixing a caller URL with the saved key would leak the key off-box.
+      const useSaved = !url && !apiKey;
+      const base = normalizeUrl(useSaved ? getSetting(`${service}_url`) : url);
+      const key  = useSaved ? getSetting(`${service}_api_key`) : (apiKey || '');
       if (!base) throw new Error('URL is empty');
       if (!key)  throw new Error('API key is empty');
       const r = await fetchTimeout(`${base}/api/v3/system/status`, {
@@ -969,12 +994,17 @@ app.post('/api/settings/test', async (req, res) => {
       const info = await r.json();
       return res.json({ ok: true, version: info.version, name: info.instanceName || info.appName });
     } else if (service === 'jellyfin') {
-      const base = normalizeUrl(url || getSetting('jellyfin_url'));
-      const key  = apiKey || getSetting('jellyfin_api_key');
+      const useSaved = !url && !apiKey;
+      const base = normalizeUrl(useSaved ? getSetting('jellyfin_url') : url);
+      const key  = useSaved ? getSetting('jellyfin_api_key') : (apiKey || '');
       if (!base) throw new Error('URL is empty');
       if (!key)  throw new Error('API key is empty');
-      const r = await fetchTimeout(`${base}/System/Info/Public?api_key=${encodeURIComponent(key)}`, {}, 6000);
-      if (!r.ok) throw new Error(`Jellyfin ${r.status}`);
+      // /System/Info (not /System/Info/Public) requires auth, so a wrong key
+      // actually fails the test instead of silently passing.
+      const r = await fetchTimeout(`${base}/System/Info`, {
+        headers: { 'X-Emby-Token': key },
+      }, 6000);
+      if (!r.ok) throw new Error(`Jellyfin ${r.status}${r.status === 401 ? ' — bad API key' : ''}`);
       const info = await r.json();
       return res.json({ ok: true, version: info.Version, name: info.ServerName });
     } else {

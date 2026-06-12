@@ -57,9 +57,19 @@ FIELDS.forEach((k) => {
   document.getElementById(k).addEventListener('input', updateDirty);
 });
 
+// The Play On device label is saved alongside the id so the UI can still show
+// it when the device is offline on the next visit. Empty when nothing selected.
+function jellyfinSessionLabel() {
+  const sel = document.getElementById('jellyfin_session_id');
+  const selected = sel.options[sel.selectedIndex];
+  if (!sel.value || !selected) return '';
+  return selected.dataset.label !== undefined ? selected.dataset.label : (selected.textContent || '');
+}
+
 // ── Save / Revert ─────────────────────────────────────────────────────────────
 document.getElementById('btn-save').addEventListener('click', async () => {
   const body = current();
+  body.jellyfin_session_name = jellyfinSessionLabel();
   try {
     const res = await fetch('/api/settings', {
       method: 'POST',
@@ -205,25 +215,6 @@ function activateWithJellyfinLoad(name) {
   }
 }
 activateTab = activateWithJellyfinLoad;
-
-// Save the session label alongside the id so the UI can show it even
-// when the device is offline on the next visit.
-const origSaveHandler = document.getElementById('btn-save').onclick;
-document.getElementById('btn-save').addEventListener('click', async () => {
-  // Run after the built-in save handler fires — the fetch in that handler
-  // sends the current FIELDS values; we piggyback the display label.
-  const sel = document.getElementById('jellyfin_session_id');
-  const selected = sel.options[sel.selectedIndex];
-  const label = selected ? (selected.dataset.label || selected.textContent || '') : '';
-  if (!label && !sel.value) return;
-  try {
-    await fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jellyfin_session_name: label }),
-    });
-  } catch {}
-});
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
 function toast(msg, kind = 'ok') {
