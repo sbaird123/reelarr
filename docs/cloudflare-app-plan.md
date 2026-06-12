@@ -1,8 +1,13 @@
-# Peekarr Cloud — Cloudflare standalone app plan
+# Reelarr — Cloudflare standalone app plan
 
-Status: idea / pre-fork design notes (June 2026). The plan is to fork Peekarr into a
-hosted multi-user app on Cloudflare. This doc captures the architecture discussion so
-work can start fresh in the fork.
+Status: fork created (June 2026). This repo (sbaird123/reelarr) is the fork of Peekarr;
+the name is **Reelarr**. Docker packaging and all Radarr/Sonarr/Jellyfin integrations
+have been stripped — see "Update" notes below. Next step: the Workers/D1/KV port.
+
+> **Update (13 Jun 2026):** decided to drop *arr integration from the hosted version
+> entirely — no connector agent, no Phase 2. Everything "+ Add to Radarr/Sonarr" did
+> becomes "Add to list" (named watchlists in D1). The connector-agent design below is
+> kept for reference in case demand for it ever appears.
 
 ## Vision
 
@@ -39,6 +44,9 @@ same cached TMDB entries, so TMDB traffic scales with the catalog, not with user
 
 ## The catch: Radarr/Sonarr/Jellyfin live on the user's LAN
 
+**Superseded (13 Jun 2026): option A won — *arr integration is dropped; adds become
+list entries.** Original analysis kept below.
+
 A Worker cannot reach `http://radarr:7878`. Three options considered:
 
 - **A. Drop them** — cloud version is discovery + watchlists only. Cleanest, but loses
@@ -46,7 +54,7 @@ A Worker cannot reach `http://radarr:7878`. Three options considered:
 - **B. Cloudflare Tunnel per user** — works, but the cloud then stores everyone's *arr
   API keys (the key-leak class we just fixed, at scale) and setup friction excludes
   most users.
-- **C. Connector agent (CHOSEN).** Tiny Docker container on the user's LAN, paired to
+- **C. Connector agent.** Tiny Docker container on the user's LAN, paired to
   the cloud account via one-time code. Inverts the flow: "+ Add to Radarr" writes a row
   to a `pending_adds` queue in D1; the agent polls (or WebSockets via a Durable Object),
   executes against Radarr/Sonarr locally, reports library status back. Jellyfin Play On
@@ -56,15 +64,14 @@ A Worker cannot reach `http://radarr:7878`. Three options considered:
 
 ## Phasing
 
-1. **Phase 1:** Workers + D1 + KV port, OAuth accounts, synced watched/skips/watchlists.
-   No *arr integration. Moderate, mostly-mechanical port; the cache layer is the redesign,
-   auth is the new subsystem.
-2. **Phase 2:** Connector agent + pairing + pending-action queue. Smaller in code than it
-   sounds; the effort concentrates in pairing security, agent update story, status sync
-   cadence. Polling every 30–60s is nearly free; DO WebSocket hibernation also cheap.
-3. Existing Docker Peekarr stays maintained. Frontend + TMDB/feed logic are shareable;
-   versions differ in storage driver and the *arr path — structure the port with a shared
-   core in mind.
+1. **Phase 0 (done, 13 Jun 2026):** strip the fork — Docker packaging and all
+   Radarr/Sonarr/Jellyfin code removed; what remains is the TMDB feed/search core with
+   SWR caching, SSR, watched list, and skip history, rebranded Reelarr.
+2. **Phase 1:** Workers + D1 + KV port, OAuth accounts, synced watched/skips/watchlists.
+   Mostly-mechanical port; the cache layer is the redesign, auth is the new subsystem.
+3. ~~Phase 2: connector agent~~ — dropped; *arr adds become list entries.
+4. Existing Docker Peekarr stays maintained. Frontend + TMDB/feed logic are shareable —
+   structure the port with a shared core in mind.
 
 ## Scaling & cost math (June 2026 pricing)
 
@@ -94,5 +101,6 @@ bill past 10k users.
   accounts fit, with skip-history pruning (already done client-side today) keeping it bounded.
 - **Operational cost is human, not infra:** abuse handling, account support. The real
   question is wanting to run a service for strangers, not affording it.
-- Open: name/domain for the hosted version; whether Phase 1 keeps a "bring your own
-  Radarr URL" escape hatch for tunnel power-users (leaning no — agent only).
+- ~~Open: name/domain~~ — decided 13 Jun 2026: **Reelarr**; reelarr.app to be registered
+  at Cloudflare Registrar (checked available). No "bring your own Radarr URL" escape
+  hatch — *arr integration is out entirely.

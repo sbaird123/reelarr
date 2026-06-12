@@ -1,7 +1,7 @@
 {
-  "name": "peekarr",
-  "version": "1.0.0",
-  "description": "A TikTok-style trailer browser for Radarr and Sonarr",
+  "name": "reelarr",
+  "version": "0.1.0",
+  "description": "TikTok-style trailer discovery for movies and TV \u2014 hosted on Cloudflare",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

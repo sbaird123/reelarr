@@ -18,7 +18,7 @@ function escapeHtml(s) {
 }
 
 // ── Swipe history (localStorage) ─────────────────────────────────────────────
-const HISTORY_KEY = 'peekarr_skips';
+const HISTORY_KEY = 'reelarr_skips';
 const MAX_HISTORY = 500;
 
 function loadHistory() {
