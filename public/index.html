@@ -36,6 +36,18 @@
       <!-- options injected by JS -->
     </select>
     <button id="search-btn" title="Search">&#128269;</button>
+    <button id="lists-btn" title="My Lists" hidden>
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
+        <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+      </svg>
+    </button>
+    <button id="friends-btn" title="Friends" hidden>
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+      </svg>
+      <span id="friends-badge" class="hidden">0</span>
+    </button>
     <div id="auth-slot"></div>
   </header>
 
@@ -46,6 +58,39 @@
       <button id="search-close">&#10005;</button>
     </div>
     <div id="search-results"></div>
+  </div>
+
+  <!-- Lists overlay (My Lists manager) -->
+  <div id="lists-overlay" class="hidden">
+    <div id="lists-bar">
+      <h2 id="lists-heading">My Lists</h2>
+      <button id="lists-close">&#10005;</button>
+    </div>
+    <div id="lists-body"></div>
+  </div>
+
+  <!-- Add-to-list bottom sheet -->
+  <div id="picker-overlay" class="hidden">
+    <div id="picker-sheet">
+      <div id="picker-head">
+        <span id="picker-title">Add to list</span>
+        <button id="picker-close">&#10005;</button>
+      </div>
+      <div id="picker-lists"></div>
+      <form id="picker-new">
+        <input id="picker-new-name" type="text" placeholder="New list name…" autocomplete="off" maxlength="100" />
+        <button type="submit" id="picker-new-btn">Create</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Friends overlay -->
+  <div id="friends-overlay" class="hidden">
+    <div id="friends-bar">
+      <h2>Friends</h2>
+      <button id="friends-close">&#10005;</button>
+    </div>
+    <div id="friends-body"></div>
   </div>
 
   <!-- Main swiper -->

@@ -120,6 +120,11 @@ async function logout() {
 function renderAuthUI() {
   const slot = document.getElementById('auth-slot');
   if (!slot) return;
+  // Lists & friends are account features — only surface them when signed in.
+  const listsBtn = document.getElementById('lists-btn');
+  if (listsBtn) listsBtn.hidden = !user;
+  const friendsBtn = document.getElementById('friends-btn');
+  if (friendsBtn) friendsBtn.hidden = !user;
   if (user) {
     const initial = (user.name || user.email || '?').trim().charAt(0).toUpperCase();
     slot.innerHTML = `
@@ -136,6 +141,514 @@ function renderAuthUI() {
       location.href = '/auth/google';
     });
   }
+}
+
+// ── Lists (named watchlists) ──────────────────────────────────────────────────
+// Server-backed; signed-in only. myLists caches [{id,name,count}]; null = stale.
+let myLists = null;
+let pickerItem = null;
+
+async function loadLists(force = false) {
+  if (myLists && !force) return myLists;
+  try {
+    const res = await fetch('/api/lists');
+    myLists = res.ok ? await res.json() : [];
+  } catch { myLists = []; }
+  return myLists;
+}
+
+// Bottom-sheet picker: drop the given item into a list, or spin up a new one.
+async function openPicker(item) {
+  if (!user) { toast('Sign in to save to lists'); return; }
+  pickerItem = item;
+  document.getElementById('picker-title').textContent = `Add "${item.title}" to…`;
+  document.getElementById('picker-overlay').classList.remove('hidden');
+  await renderPickerLists();
+}
+
+function closePicker() {
+  document.getElementById('picker-overlay').classList.add('hidden');
+  document.getElementById('picker-new-name').value = '';
+  pickerItem = null;
+}
+
+async function renderPickerLists() {
+  const box = document.getElementById('picker-lists');
+  box.innerHTML = '<div class="picker-empty">Loading…</div>';
+  // Only lists you can add to — your own, or shared lists where you're an editor.
+  const lists = (await loadLists(true)).filter((l) => l.role === 'owner' || l.role === 'editor');
+  if (!lists.length) {
+    box.innerHTML = '<div class="picker-empty">No lists yet — create one below.</div>';
+    return;
+  }
+  box.innerHTML = '';
+  lists.forEach((l) => {
+    const row = document.createElement('button');
+    row.className = 'picker-row';
+    row.innerHTML = `<span class="picker-row-name">${escapeHtml(l.name)}</span><span class="picker-row-count">${l.count}</span>`;
+    row.addEventListener('click', () => addItemToList(l.id, pickerItem));
+    box.appendChild(row);
+  });
+}
+
+async function addItemToList(listId, item) {
+  if (!item) return;
+  try {
+    const res = await fetch(`/api/lists/${listId}/items`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tmdbId: item.id, mediaType: item.media_type || 'movie', title: item.title }),
+    });
+    if (!res.ok) throw new Error();
+    myLists = null; // counts changed
+    closePicker();
+    toast(`Added "${item.title}" to list`);
+  } catch { toast('Could not add to list'); }
+}
+
+// "My Lists" manager overlay — list of lists, drilling into one shows its items.
+async function openListsView() {
+  if (!user) { toast('Sign in to use lists'); return; }
+  document.getElementById('lists-overlay').classList.remove('hidden');
+  await renderListsView();
+}
+
+function closeListsView() {
+  document.getElementById('lists-overlay').classList.add('hidden');
+}
+
+async function renderListsView() {
+  const body = document.getElementById('lists-body');
+  document.getElementById('lists-heading').textContent = 'My Lists';
+  body.innerHTML = '<div class="picker-empty">Loading…</div>';
+  const lists = await loadLists(true);
+  body.innerHTML = '';
+
+  const form = document.createElement('form');
+  form.className = 'lists-create';
+  form.innerHTML = `<input type="text" placeholder="New list name…" maxlength="100" autocomplete="off" /><button type="submit">Create</button>`;
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const input = form.querySelector('input');
+    const name = input.value.trim();
+    if (!name) return;
+    await createList(name);
+    input.value = '';
+    renderListsView();
+  });
+  body.appendChild(form);
+
+  const owned = lists.filter((l) => l.role === 'owner');
+  const shared = lists.filter((l) => l.role !== 'owner');
+
+  if (!owned.length) {
+    const empty = document.createElement('div');
+    empty.className = 'picker-empty';
+    empty.textContent = 'No lists yet.';
+    body.appendChild(empty);
+  } else {
+    owned.forEach((l) => body.appendChild(ownedListCard(l)));
+  }
+
+  if (shared.length) {
+    body.appendChild(friendSection('Shared with me'));
+    shared.forEach((l) => body.appendChild(sharedListCard(l)));
+  }
+}
+
+function ownedListCard(l) {
+  const card = document.createElement('div');
+  card.className = 'list-card';
+  card.innerHTML = `
+    <div class="list-card-head">
+      <span class="list-card-name">${escapeHtml(l.name)}</span>
+      <span class="list-card-count">${l.shared ? '<span class="sync-badge">SYNCED</span> ' : ''}${l.count} item${l.count === 1 ? '' : 's'}</span>
+    </div>
+    <div class="list-card-actions">
+      <button class="list-open">Open</button>
+      <button class="list-rename">Rename</button>
+      <button class="list-delete">Delete</button>
+    </div>`;
+  card.querySelector('.list-open').addEventListener('click', () => openListDetail(l));
+  card.querySelector('.list-rename').addEventListener('click', async () => {
+    const name = prompt('Rename list', l.name);
+    if (name && name.trim()) { await renameList(l.id, name.trim()); renderListsView(); }
+  });
+  card.querySelector('.list-delete').addEventListener('click', async () => {
+    if (confirm(`Delete "${l.name}"? This can't be undone.`)) { await deleteList(l.id); renderListsView(); }
+  });
+  return card;
+}
+
+function sharedListCard(l) {
+  const card = document.createElement('div');
+  card.className = 'list-card';
+  const roleLabel = l.role === 'editor' ? 'can edit' : 'view only';
+  card.innerHTML = `
+    <div class="list-card-head">
+      <span class="list-card-name">${escapeHtml(l.name)}</span>
+      <span class="list-card-count">${l.count} item${l.count === 1 ? '' : 's'}</span>
+    </div>
+    <div class="list-card-sub">by ${escapeHtml(l.owner_name || 'a friend')} · ${roleLabel}</div>
+    <div class="list-card-actions">
+      <button class="list-open">Open</button>
+      <button class="list-leave">Leave</button>
+    </div>`;
+  card.querySelector('.list-open').addEventListener('click', () => openListDetail(l));
+  card.querySelector('.list-leave').addEventListener('click', async () => {
+    if (confirm(`Leave "${l.name}"?`)) { await leaveList(l.id); renderListsView(); }
+  });
+  return card;
+}
+
+async function openListDetail(list) {
+  const body = document.getElementById('lists-body');
+  document.getElementById('lists-heading').textContent = list.name;
+  body.innerHTML = '<div class="picker-empty">Loading…</div>';
+  let data;
+  try { data = await (await fetch(`/api/lists/${list.id}`)).json(); }
+  catch { body.innerHTML = '<div class="picker-empty">Could not load list.</div>'; return; }
+
+  const role = data.role || 'owner';
+  const canEdit = role === 'owner' || role === 'editor';
+
+  body.innerHTML = '';
+  const back = document.createElement('button');
+  back.className = 'list-back';
+  back.textContent = '‹ All lists';
+  back.addEventListener('click', renderListsView);
+  body.appendChild(back);
+
+  // Sharing + collaborator management are owner-only.
+  if (role === 'owner') {
+    body.appendChild(buildSharePanel(list, data.share));
+    body.appendChild(buildCollabPanel(list));
+  } else {
+    const banner = document.createElement('div');
+    banner.className = 'list-role-banner';
+    banner.textContent = role === 'editor' ? 'Shared with you · you can add and remove titles' : 'Shared with you · view only';
+    body.appendChild(banner);
+  }
+
+  const items = data.items || [];
+  if (!items.length) {
+    const empty = document.createElement('div');
+    empty.className = 'picker-empty';
+    empty.textContent = canEdit
+      ? 'This list is empty. Add titles from the feed with “+ List”.'
+      : 'This list is empty.';
+    body.appendChild(empty);
+    return;
+  }
+  items.forEach((it) => {
+    const row = document.createElement('div');
+    row.className = 'list-item-row';
+    const badge = it.media_type === 'tv' ? '<span class="media-badge">TV</span>' : '';
+    const remove = canEdit ? '<button class="list-item-remove" title="Remove">&#10005;</button>' : '';
+    row.innerHTML = `<span class="list-item-title">${escapeHtml(it.title || `#${it.tmdb_id}`)}</span>${badge}${remove}`;
+    const rm = row.querySelector('.list-item-remove');
+    if (rm) rm.addEventListener('click', async () => {
+      await removeListItem(list.id, it.tmdb_id, it.media_type);
+      row.remove();
+      myLists = null;
+    });
+    body.appendChild(row);
+  });
+}
+
+// Owner-only "Shared with" panel: current collaborators + add-a-friend control.
+function buildCollabPanel(list) {
+  const panel = document.createElement('div');
+  panel.className = 'collab-panel';
+  panel.innerHTML = `<div class="share-head">Shared with</div><div class="collab-list">Loading…</div>`;
+  renderCollab(list, panel);
+  return panel;
+}
+
+async function renderCollab(list, panel) {
+  const box = panel.querySelector('.collab-list');
+  box.innerHTML = 'Loading…';
+  let collabs = [];
+  let friends = [];
+  try {
+    const [cRes, fData] = await Promise.all([
+      fetch(`/api/lists/${list.id}/collaborators`).then((r) => r.ok ? r.json() : []),
+      loadFriends(),
+    ]);
+    collabs = cRes || [];
+    friends = (fData && fData.friends) || [];
+  } catch {}
+
+  box.innerHTML = '';
+  collabs.forEach((c) => {
+    const row = document.createElement('div');
+    row.className = 'collab-row';
+    row.innerHTML = `<span class="collab-name">${escapeHtml(c.name || c.email)}</span>
+      <span class="collab-role">${c.role === 'editor' ? 'editor' : 'viewer'}</span>
+      <button class="collab-remove" title="Remove">&#10005;</button>`;
+    row.querySelector('.collab-remove').addEventListener('click', async () => {
+      await removeCollaborator(list.id, c.id);
+      renderCollab(list, panel);
+    });
+    box.appendChild(row);
+  });
+  if (!collabs.length) {
+    const e = document.createElement('div');
+    e.className = 'collab-empty';
+    e.textContent = 'Not shared with anyone yet.';
+    box.appendChild(e);
+  }
+
+  // Add control — only friends who aren't already collaborators.
+  const collabIds = new Set(collabs.map((c) => c.id));
+  const available = friends.filter((f) => !collabIds.has(f.id));
+  const add = document.createElement('div');
+  add.className = 'collab-add';
+  if (!friends.length) {
+    add.innerHTML = `<span class="collab-empty">Add friends first to share lists.</span>`;
+  } else if (!available.length) {
+    add.innerHTML = `<span class="collab-empty">All your friends are already on this list.</span>`;
+  } else {
+    const opts = available.map((f) => `<option value="${f.id}">${escapeHtml(f.name || f.email)}</option>`).join('');
+    add.innerHTML = `
+      <select class="collab-friend">${opts}</select>
+      <select class="collab-role-sel"><option value="viewer">viewer</option><option value="editor">editor</option></select>
+      <button class="collab-add-btn">Share</button>`;
+    add.querySelector('.collab-add-btn').addEventListener('click', async () => {
+      const userId = parseInt(add.querySelector('.collab-friend').value, 10);
+      const r = add.querySelector('.collab-role-sel').value;
+      const ok = await addCollaborator(list.id, userId, r);
+      toast(ok ? 'List shared' : 'Could not share');
+      renderCollab(list, panel);
+      myLists = null;
+    });
+  }
+  box.appendChild(add);
+}
+
+async function addCollaborator(listId, userId, role) {
+  try { const r = await fetch(`/api/lists/${listId}/collaborators`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId, role }) }); return r.ok; }
+  catch { return false; }
+}
+async function removeCollaborator(listId, userId) {
+  try { await fetch(`/api/lists/${listId}/collaborators/${userId}`, { method: 'DELETE' }); } catch {}
+}
+async function leaveList(listId) {
+  // The client doesn't know its own user id, so use the dedicated endpoint that
+  // resolves "me" from the session.
+  try { await fetch(`/api/lists/${listId}/leave`, { method: 'POST' }); } catch {}
+}
+
+// Radarr/Sonarr sync panel for a single list. share = {token, radarr, sonarr}
+// when enabled, else null.
+function buildSharePanel(list, share) {
+  const panel = document.createElement('div');
+  panel.className = 'share-panel';
+
+  if (!share) {
+    panel.innerHTML = `
+      <div class="share-head">Sync with Radarr / Sonarr</div>
+      <p class="share-help">Generate a private import URL that Radarr and Sonarr can subscribe to.</p>
+      <button class="share-enable">Enable sync</button>`;
+    panel.querySelector('.share-enable').addEventListener('click', async () => {
+      const res = await enableShare(list.id);
+      if (res) { myLists = null; openListDetail(list); }
+      else toast('Could not enable sync');
+    });
+    return panel;
+  }
+
+  panel.innerHTML = `
+    <div class="share-head">Sync with Radarr / Sonarr</div>
+    <p class="share-help">In Radarr: <b>Settings → Lists → + → StevenLu Custom</b>, paste the Radarr URL.
+      In Sonarr: <b>Settings → Import Lists → + → Custom List</b>, paste the Sonarr URL.</p>
+    <div class="share-url">
+      <label>Radarr (movies)</label>
+      <div class="share-url-row"><input readonly value="${escapeHtml(share.radarr)}" /><button data-copy="${escapeHtml(share.radarr)}">Copy</button></div>
+    </div>
+    <div class="share-url">
+      <label>Sonarr (TV)</label>
+      <div class="share-url-row"><input readonly value="${escapeHtml(share.sonarr)}" /><button data-copy="${escapeHtml(share.sonarr)}">Copy</button></div>
+    </div>
+    <button class="share-disable">Stop syncing</button>`;
+
+  panel.querySelectorAll('button[data-copy]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(btn.dataset.copy); toast('URL copied'); }
+      catch {
+        // Clipboard API needs HTTPS/permission — fall back to selecting the input.
+        const input = btn.previousElementSibling;
+        input.select(); document.execCommand('copy'); toast('URL copied');
+      }
+    });
+  });
+  panel.querySelector('.share-disable').addEventListener('click', async () => {
+    if (!confirm('Stop syncing? The import URLs will stop working immediately.')) return;
+    await disableShare(list.id);
+    myLists = null;
+    openListDetail(list);
+  });
+  return panel;
+}
+
+async function enableShare(listId) {
+  try { const r = await fetch(`/api/lists/${listId}/share`, { method: 'POST' }); return r.ok ? await r.json() : null; }
+  catch { return null; }
+}
+async function disableShare(listId) {
+  try { await fetch(`/api/lists/${listId}/share`, { method: 'DELETE' }); }
+  catch {}
+}
+
+async function createList(name) {
+  try { const r = await fetch('/api/lists', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }); if (r.ok) myLists = null; }
+  catch {}
+}
+async function renameList(id, name) {
+  try { await fetch(`/api/lists/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }); myLists = null; }
+  catch {}
+}
+async function deleteList(id) {
+  try { await fetch(`/api/lists/${id}`, { method: 'DELETE' }); myLists = null; }
+  catch {}
+}
+async function removeListItem(listId, tmdbId, mediaType) {
+  try { await fetch(`/api/lists/${listId}/items/${tmdbId}?mediaType=${mediaType || 'movie'}`, { method: 'DELETE' }); }
+  catch {}
+}
+
+// ── Friends ───────────────────────────────────────────────────────────────────
+async function loadFriends() {
+  try { const r = await fetch('/api/friends'); return r.ok ? await r.json() : null; }
+  catch { return null; }
+}
+
+// Badge on the header button reflects incoming (pending) requests.
+async function refreshFriendBadge() {
+  if (!user) return;
+  const data = await loadFriends();
+  const badge = document.getElementById('friends-badge');
+  if (!badge) return;
+  const n = data && data.incoming ? data.incoming.length : 0;
+  badge.textContent = n;
+  badge.classList.toggle('hidden', n === 0);
+}
+
+function openFriendsView() {
+  if (!user) { toast('Sign in to add friends'); return; }
+  document.getElementById('friends-overlay').classList.remove('hidden');
+  renderFriendsView();
+}
+function closeFriendsView() {
+  document.getElementById('friends-overlay').classList.add('hidden');
+}
+
+async function renderFriendsView() {
+  const body = document.getElementById('friends-body');
+  body.innerHTML = '<div class="picker-empty">Loading…</div>';
+  const data = await loadFriends();
+  if (!data) { body.innerHTML = '<div class="picker-empty">Could not load friends.</div>'; return; }
+  body.innerHTML = '';
+
+  const form = document.createElement('form');
+  form.className = 'friend-add';
+  form.innerHTML = `<input type="email" placeholder="Friend's email…" autocomplete="off" /><button type="submit">Add</button>`;
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const input = form.querySelector('input');
+    const email = input.value.trim();
+    if (!email) return;
+    const res = await addFriend(email);
+    input.value = '';
+    toast(friendMsg(res));
+    renderFriendsView();
+    refreshFriendBadge();
+  });
+  body.appendChild(form);
+
+  if (data.incoming.length) {
+    body.appendChild(friendSection(`Requests (${data.incoming.length})`));
+    data.incoming.forEach((f) => body.appendChild(friendRow(f, 'incoming')));
+  }
+
+  body.appendChild(friendSection(`Friends (${data.friends.length})`));
+  if (!data.friends.length) {
+    const e = document.createElement('div');
+    e.className = 'picker-empty';
+    e.textContent = 'No friends yet — add one by email above.';
+    body.appendChild(e);
+  } else {
+    data.friends.forEach((f) => body.appendChild(friendRow(f, 'friend')));
+  }
+
+  if (data.outgoing.length) {
+    body.appendChild(friendSection('Pending'));
+    data.outgoing.forEach((f) => body.appendChild(friendRow(f, 'outgoing')));
+  }
+}
+
+function friendSection(text) {
+  const h = document.createElement('div');
+  h.className = 'friend-section';
+  h.textContent = text;
+  return h;
+}
+
+function friendRow(f, kind) {
+  const row = document.createElement('div');
+  row.className = 'friend-row';
+  const initial = (f.name || f.email || '?').trim().charAt(0).toUpperCase();
+  const avatar = f.avatar
+    ? `<img class="friend-avatar" src="${escapeHtml(f.avatar)}" referrerpolicy="no-referrer" alt="" />`
+    : `<div class="friend-avatar friend-avatar-fallback">${escapeHtml(initial)}</div>`;
+  let actions = '';
+  if (kind === 'incoming') actions = `<button class="friend-accept">Accept</button><button class="friend-decline">Decline</button>`;
+  else if (kind === 'friend') actions = `<button class="friend-remove">Remove</button>`;
+  else actions = `<button class="friend-cancel">Cancel</button>`;
+  row.innerHTML = `${avatar}
+    <div class="friend-meta">
+      <span class="friend-name">${escapeHtml(f.name || f.email || 'Unknown')}</span>
+      <span class="friend-email">${escapeHtml(f.email || '')}</span>
+    </div>
+    <div class="friend-actions">${actions}</div>`;
+
+  const reload = async () => { await renderFriendsView(); refreshFriendBadge(); };
+  const acc = row.querySelector('.friend-accept');
+  if (acc) acc.addEventListener('click', async () => { await acceptFriend(f.id); reload(); });
+  const dec = row.querySelector('.friend-decline');
+  if (dec) dec.addEventListener('click', async () => { await removeFriend(f.id); reload(); });
+  const rem = row.querySelector('.friend-remove');
+  if (rem) rem.addEventListener('click', async () => { if (confirm(`Remove ${f.name || f.email}?`)) { await removeFriend(f.id); reload(); } });
+  const can = row.querySelector('.friend-cancel');
+  if (can) can.addEventListener('click', async () => { await removeFriend(f.id); reload(); });
+  return row;
+}
+
+function friendMsg(res) {
+  if (!res) return 'Could not send request';
+  switch (res.status) {
+    case 'requested':         return 'Friend request sent';
+    case 'accepted':          return 'You are now friends';
+    case 'already_friends':   return 'You are already friends';
+    case 'already_requested': return 'Request already sent';
+    default:                  return res.error || 'Could not send request';
+  }
+}
+
+async function addFriend(email) {
+  try {
+    const r = await fetch('/api/friends', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    return await r.json();
+  } catch { return null; }
+}
+async function acceptFriend(userId) {
+  try { await fetch(`/api/friends/${userId}/accept`, { method: 'POST' }); } catch {}
+}
+async function removeFriend(userId) {
+  try { await fetch(`/api/friends/${userId}`, { method: 'DELETE' }); } catch {}
 }
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -321,6 +834,7 @@ function buildSlide(item, index) {
       <div class="slide-overview">${escapeHtml(item.overview)}</div>
       <div class="slide-actions">
         <button class="btn-watched">Watched</button>
+        <button class="btn-list">+ List</button>
         <button class="btn-skip">Skip</button>
       </div>
     </div>
@@ -338,6 +852,8 @@ function buildSlide(item, index) {
     toast(`"${item.title}" marked as watched`);
     advanceOrLoad();
   });
+
+  slide.querySelector('.btn-list').addEventListener('click', () => openPicker(item));
 
   slide.querySelector('.btn-skip').addEventListener('click', () => {
     recordSkip(item.id, item.media_type);
@@ -732,6 +1248,34 @@ document.getElementById('list-select').addEventListener('change', (e) => {
   loadFeed(true);
 });
 
+// ── Lists UI wiring ───────────────────────────────────────────────────────────
+document.getElementById('lists-btn').addEventListener('click', openListsView);
+document.getElementById('lists-close').addEventListener('click', closeListsView);
+document.getElementById('friends-btn').addEventListener('click', openFriendsView);
+document.getElementById('friends-close').addEventListener('click', closeFriendsView);
+document.getElementById('picker-close').addEventListener('click', closePicker);
+document.getElementById('picker-overlay').addEventListener('click', (e) => {
+  // Tap the dimmed backdrop (not the sheet) to dismiss.
+  if (e.target.id === 'picker-overlay') closePicker();
+});
+document.getElementById('picker-new').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const input = document.getElementById('picker-new-name');
+  const name = input.value.trim();
+  if (!name || !pickerItem) return;
+  // Create the list, then immediately drop the pending item into it.
+  try {
+    const res = await fetch('/api/lists', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    if (!res.ok) throw new Error();
+    const list = await res.json();
+    myLists = null;
+    await addItemToList(list.id, pickerItem);
+  } catch { toast('Could not create list'); }
+});
+
 // ── Search ────────────────────────────────────────────────────────────────────
 let searchTimer = null;
 
@@ -876,6 +1420,7 @@ function hydrateInitial(payload) {
     if (user) {
       await syncLocalToServer();
       await loadWatchedServer(); // future feed pages filter against the account
+      refreshFriendBadge();      // surface any pending friend requests
     }
   });
 })();

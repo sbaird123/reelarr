@@ -241,6 +241,24 @@ async function prewarm(env) {
   console.log(`[prewarm] ${ok}/${ok + fail} lists warmed in ${Date.now() - start}ms`);
 }
 
+// ── Email (Cloudflare Email Sending) ────────────────────────────────────────
+// Transactional only (friend requests, share notices). Best-effort: a send
+// failure must never break the request that triggered it, so callers don't await
+// a throw — sendEmail swallows errors and returns a boolean. The from-domain
+// (reelarr.app) is onboarded for sending; the EMAIL binding is set in wrangler.
+const MAIL_FROM = { email: 'notifications@reelarr.app', name: 'Reelarr' };
+
+async function sendEmail(env, { to, subject, html, text }) {
+  if (!env.EMAIL || !to) return false; // binding absent or no address → skip
+  try {
+    await env.EMAIL.send({ to, from: MAIL_FROM, subject, html, text });
+    return true;
+  } catch (e) {
+    console.warn(`[email] send to ${to} failed: ${e.code || ''} ${e.message || e}`);
+    return false;
+  }
+}
+
 // ── Auth (D1 sessions) ────────────────────────────────────────────────────────
 const SESSION_COOKIE = 'reelarr_session';
 const SESSION_TTL_MS = 60 * 24 * 60 * 60 * 1000; // 60 days
@@ -319,6 +337,12 @@ const app = new Hono();
 function safeJson(obj) {
   // Prevent `</script>` injection when inlining JSON into HTML.
   return JSON.stringify(obj ?? null).replace(/</g, '\\u003c');
+}
+
+// Escape user-supplied text (names) before interpolating into email HTML.
+function esc(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 // SSR for / — inject an initial feed so the first paint isn't a blank swiper.
@@ -401,8 +425,12 @@ app.get('/api/shows/search', async (c) => {
 // client id/secret are read from env (GOOGLE_ID / GOOGLE_SECRET).
 // (The users.provider column is generic, so another provider can be added later
 // without a migration.)
+// `email` scope added for the friends feature (request-a-friend-by-email). Adding
+// it doesn't trigger Google reverification — email is a basic, non-sensitive
+// scope. Existing users' emails backfill automatically: completeLogin passes the
+// email and upsertUser's ON CONFLICT updates it on the next sign-in.
 app.use('/auth/google', (c, next) =>
-  googleAuth({ scope: ['openid', 'profile'] })(c, next));
+  googleAuth({ scope: ['openid', 'profile', 'email'] })(c, next));
 app.get('/auth/google', (c) => {
   const u = c.get('user-google');
   return completeLogin(c, u && {
@@ -473,6 +501,464 @@ app.post('/api/watched/merge', withUser, async (c) => {
     .map((it) => stmt.bind(u.id, parseInt(it.tmdbId, 10), it.mediaType || 'movie', it.title || null));
   if (batch.length) await c.env.DB.batch(batch);
   return c.json({ ok: true, merged: batch.length });
+});
+
+// ── Lists (named watchlists, per-user, D1) ──────────────────────────────────────
+// The feature that replaces "+ Add to Radarr/Sonarr". Tables (lists/list_items)
+// shipped in 0001_init; these are the endpoints + UI on top of them.
+const MAX_LIST_NAME = 100;
+
+// Resolve a list the caller owns, or null. Every item mutation goes through this
+// so a user can't read/write another account's list by guessing an id.
+async function ownedList(env, userId, listId) {
+  if (!Number.isInteger(listId)) return null;
+  return env.DB.prepare(
+    `SELECT id, name, share_token FROM lists WHERE id = ? AND user_id = ?`
+  ).bind(listId, userId).first();
+}
+
+// Resolve the caller's role on a list: 'owner' | 'editor' | 'viewer', or null if
+// no access. Owner = lists.user_id; collaborators come from list_collaborators
+// (Phase 4). Used for read + item-edit; owner-only ops still use ownedList().
+async function listAccess(env, userId, listId) {
+  if (!Number.isInteger(listId)) return null;
+  const row = await env.DB.prepare(
+    `SELECT l.id, l.name, l.share_token, l.user_id AS owner_id, c.role AS collab_role
+     FROM lists l
+     LEFT JOIN list_collaborators c ON c.list_id = l.id AND c.user_id = ?2
+     WHERE l.id = ?1`
+  ).bind(listId, userId).first();
+  if (!row) return null;
+  const role = row.owner_id === userId ? 'owner' : row.collab_role;
+  if (!role) return null;
+  return { id: row.id, name: row.name, share_token: row.share_token, owner_id: row.owner_id, role };
+}
+
+async function areFriends(env, a, b) {
+  const row = await env.DB.prepare(
+    `SELECT 1 FROM friendships WHERE status = 'accepted' AND
+       ((requester_id = ?1 AND addressee_id = ?2) OR (requester_id = ?2 AND addressee_id = ?1))`
+  ).bind(a, b).first();
+  return !!row;
+}
+
+// ── *arr sync (Phase 2) ─────────────────────────────────────────────────────
+// Radarr/Sonarr import lists pull a tokenised JSON URL on their own schedule.
+// Both match on *external* ids, not TMDB's: Radarr's StevenLu importer keys on
+// imdb_id; Sonarr's Custom List keys on tvdbId (with tmdbId/imdbId as extras).
+// So every export maps TMDB ids → external ids via TMDB's /external_ids, cached
+// hard in KV (these mappings are effectively immutable).
+function shareToken() {
+  const b = new Uint8Array(16);
+  crypto.getRandomValues(b);
+  return [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+}
+
+async function externalIds(env, kind, tmdbId) {
+  const key = `extid:${kind}:${tmdbId}`;
+  try { const hit = await env.CACHE.get(key, { type: 'json' }); if (hit) return hit; }
+  catch {}
+  let ids = { imdb_id: null, tvdb_id: null };
+  try {
+    const d = await tmdbRaw(env, `/${kind}/${tmdbId}/external_ids`);
+    ids = { imdb_id: d.imdb_id || null, tvdb_id: d.tvdb_id || null };
+  } catch { /* leave nulls; the item is just skipped in the export */ }
+  // 30-day TTL — external ids don't change. (Negative results re-checked monthly.)
+  try { await env.CACHE.put(key, JSON.stringify(ids), { expirationTtl: 60 * 60 * 24 * 30 }); }
+  catch {}
+  return ids;
+}
+
+function listByToken(env, token) {
+  if (!token) return Promise.resolve(null);
+  return env.DB.prepare(`SELECT id, name FROM lists WHERE share_token = ?`).bind(token).first();
+}
+
+// Build the full import URLs from the request origin so they're copy-pasteable.
+function shareInfo(c, token) {
+  const origin = new URL(c.req.url).origin;
+  return {
+    token,
+    radarr: `${origin}/list/${token}/radarr.json`,
+    sonarr: `${origin}/list/${token}/sonarr.json`,
+  };
+}
+
+app.get('/api/lists', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  // Lists the user owns, plus lists shared with them (collaborator rows). Owned
+  // first; shared entries carry the owner's name and the caller's role.
+  const owned = await c.env.DB.prepare(
+    `SELECT l.id, l.name, l.created_at, COUNT(li.tmdb_id) AS count,
+            'owner' AS role, NULL AS owner_name,
+            CASE WHEN l.share_token IS NOT NULL THEN 1 ELSE 0 END AS shared
+     FROM lists l LEFT JOIN list_items li ON li.list_id = l.id
+     WHERE l.user_id = ?
+     GROUP BY l.id
+     ORDER BY l.created_at DESC`
+  ).bind(u.id).all();
+  const shared = await c.env.DB.prepare(
+    `SELECT l.id, l.name, l.created_at, COUNT(li.tmdb_id) AS count,
+            c.role AS role, ownr.name AS owner_name, 0 AS shared
+     FROM list_collaborators c
+     JOIN lists l ON l.id = c.list_id
+     JOIN users ownr ON ownr.id = l.user_id
+     LEFT JOIN list_items li ON li.list_id = l.id
+     WHERE c.user_id = ?
+     GROUP BY l.id
+     ORDER BY c.created_at DESC`
+  ).bind(u.id).all();
+  return c.json([...(owned.results || []), ...(shared.results || [])]);
+});
+
+app.post('/api/lists', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const { name } = await c.req.json().catch(() => ({}));
+  const trimmed = (name || '').trim().slice(0, MAX_LIST_NAME);
+  if (!trimmed) return c.json({ error: 'name required' }, 400);
+  const res = await c.env.DB.prepare(
+    `INSERT INTO lists (user_id, name) VALUES (?, ?)`
+  ).bind(u.id, trimmed).run();
+  return c.json({ id: res.meta.last_row_id, name: trimmed, count: 0 });
+});
+
+app.get('/api/lists/:id', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const list = await listAccess(c.env, u.id, parseInt(c.req.param('id'), 10));
+  if (!list) return c.json({ error: 'not found' }, 404);
+  const { results } = await c.env.DB.prepare(
+    `SELECT tmdb_id, media_type, title, added_at FROM list_items
+     WHERE list_id = ? ORDER BY added_at DESC`
+  ).bind(list.id).all();
+  return c.json({
+    id: list.id,
+    name: list.name,
+    role: list.role,
+    items: results || [],
+    // *arr import URLs are owner-only — collaborators don't manage sharing.
+    share: list.role === 'owner' && list.share_token ? shareInfo(c, list.share_token) : null,
+  });
+});
+
+// Enable *arr sync for a list — mint a share token if it doesn't have one, then
+// return the import URLs. Idempotent: re-enabling returns the existing token.
+app.post('/api/lists/:id/share', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const id = parseInt(c.req.param('id'), 10);
+  const list = await ownedList(c.env, u.id, id);
+  if (!list) return c.json({ error: 'not found' }, 404);
+  let token = list.share_token;
+  if (!token) {
+    token = shareToken();
+    await c.env.DB.prepare(`UPDATE lists SET share_token = ? WHERE id = ?`).bind(token, id).run();
+  }
+  return c.json(shareInfo(c, token));
+});
+
+// Revoke sharing — old import URLs immediately 404.
+app.delete('/api/lists/:id/share', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const id = parseInt(c.req.param('id'), 10);
+  const list = await ownedList(c.env, u.id, id);
+  if (!list) return c.json({ error: 'not found' }, 404);
+  await c.env.DB.prepare(`UPDATE lists SET share_token = NULL WHERE id = ?`).bind(id).run();
+  return c.json({ ok: true });
+});
+
+// Public import endpoints (token is the auth — no session). Radarr StevenLu
+// format: [{ title, imdb_id }]. Only movies; items without an imdb_id are skipped.
+app.get('/list/:token/radarr.json', async (c) => {
+  const list = await listByToken(c.env, c.req.param('token'));
+  if (!list) return c.json({ error: 'not found' }, 404);
+  const { results } = await c.env.DB.prepare(
+    `SELECT tmdb_id, title FROM list_items WHERE list_id = ? AND media_type = 'movie'`
+  ).bind(list.id).all();
+  const mapped = await Promise.all((results || []).map(async (it) => {
+    const ids = await externalIds(c.env, 'movie', it.tmdb_id);
+    return ids.imdb_id ? { title: it.title || `tmdb:${it.tmdb_id}`, imdb_id: ids.imdb_id } : null;
+  }));
+  c.header('Cache-Control', 'public, max-age=600');
+  return c.json(mapped.filter(Boolean));
+});
+
+// Sonarr Custom List format: [{ title, tvdbId, tmdbId, imdbId }]. Only TV; items
+// with neither a tvdbId nor an imdbId are skipped (Sonarr can't match them).
+app.get('/list/:token/sonarr.json', async (c) => {
+  const list = await listByToken(c.env, c.req.param('token'));
+  if (!list) return c.json({ error: 'not found' }, 404);
+  const { results } = await c.env.DB.prepare(
+    `SELECT tmdb_id, title FROM list_items WHERE list_id = ? AND media_type = 'tv'`
+  ).bind(list.id).all();
+  const mapped = await Promise.all((results || []).map(async (it) => {
+    const ids = await externalIds(c.env, 'tv', it.tmdb_id);
+    if (!ids.tvdb_id && !ids.imdb_id) return null;
+    return {
+      title: it.title || `tmdb:${it.tmdb_id}`,
+      tvdbId: ids.tvdb_id || 0,
+      tmdbId: it.tmdb_id,
+      imdbId: ids.imdb_id || '',
+    };
+  }));
+  c.header('Cache-Control', 'public, max-age=600');
+  return c.json(mapped.filter(Boolean));
+});
+
+app.patch('/api/lists/:id', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const id = parseInt(c.req.param('id'), 10);
+  const { name } = await c.req.json().catch(() => ({}));
+  const trimmed = (name || '').trim().slice(0, MAX_LIST_NAME);
+  if (!trimmed) return c.json({ error: 'name required' }, 400);
+  const res = await c.env.DB.prepare(
+    `UPDATE lists SET name = ? WHERE id = ? AND user_id = ?`
+  ).bind(trimmed, id, u.id).run();
+  if (!res.meta.changes) return c.json({ error: 'not found' }, 404);
+  return c.json({ ok: true, name: trimmed });
+});
+
+app.delete('/api/lists/:id', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const id = parseInt(c.req.param('id'), 10);
+  // list_items rows cascade via the FK in 0001_init.
+  const res = await c.env.DB.prepare(
+    `DELETE FROM lists WHERE id = ? AND user_id = ?`
+  ).bind(id, u.id).run();
+  if (!res.meta.changes) return c.json({ error: 'not found' }, 404);
+  return c.json({ ok: true });
+});
+
+app.post('/api/lists/:id/items', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const list = await listAccess(c.env, u.id, parseInt(c.req.param('id'), 10));
+  if (!list) return c.json({ error: 'not found' }, 404);
+  if (list.role === 'viewer') return c.json({ error: 'read-only' }, 403);
+  const { tmdbId, mediaType = 'movie', title } = await c.req.json().catch(() => ({}));
+  const id = parseInt(tmdbId, 10);
+  if (!Number.isInteger(id)) return c.json({ error: 'tmdbId required' }, 400);
+  await c.env.DB.prepare(
+    `INSERT OR IGNORE INTO list_items (list_id, tmdb_id, media_type, title) VALUES (?, ?, ?, ?)`
+  ).bind(list.id, id, mediaType === 'tv' ? 'tv' : 'movie', title || null).run();
+  return c.json({ ok: true });
+});
+
+app.delete('/api/lists/:id/items/:tmdbId', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const list = await listAccess(c.env, u.id, parseInt(c.req.param('id'), 10));
+  if (!list) return c.json({ error: 'not found' }, 404);
+  if (list.role === 'viewer') return c.json({ error: 'read-only' }, 403);
+  const id = parseInt(c.req.param('tmdbId'), 10);
+  if (!Number.isInteger(id)) return c.json({ error: 'invalid tmdbId' }, 400);
+  const mediaType = c.req.query('mediaType') === 'tv' ? 'tv' : 'movie';
+  await c.env.DB.prepare(
+    `DELETE FROM list_items WHERE list_id = ? AND tmdb_id = ? AND media_type = ?`
+  ).bind(list.id, id, mediaType).run();
+  return c.json({ ok: true });
+});
+
+// ── List collaborators (Phase 4: shared lists) ──────────────────────────────
+// Owner-managed; you can only share with a confirmed friend.
+app.get('/api/lists/:id/collaborators', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const list = await ownedList(c.env, u.id, parseInt(c.req.param('id'), 10));
+  if (!list) return c.json({ error: 'not found' }, 404);
+  const { results } = await c.env.DB.prepare(
+    `SELECT u.id, u.name, u.email, u.avatar, c.role
+     FROM list_collaborators c JOIN users u ON u.id = c.user_id
+     WHERE c.list_id = ? ORDER BY u.name`
+  ).bind(list.id).all();
+  return c.json(results || []);
+});
+
+app.post('/api/lists/:id/collaborators', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const list = await ownedList(c.env, u.id, parseInt(c.req.param('id'), 10));
+  if (!list) return c.json({ error: 'not found' }, 404);
+  const body = await c.req.json().catch(() => ({}));
+  const friendId = parseInt(body.userId, 10);
+  const role = body.role === 'editor' ? 'editor' : 'viewer';
+  if (!Number.isInteger(friendId)) return c.json({ error: 'userId required' }, 400);
+  if (friendId === u.id) return c.json({ error: "can't share with yourself" }, 400);
+  if (!(await areFriends(c.env, u.id, friendId)))
+    return c.json({ error: 'you can only share with confirmed friends' }, 403);
+  await c.env.DB.prepare(
+    `INSERT INTO list_collaborators (list_id, user_id, role) VALUES (?, ?, ?)
+     ON CONFLICT(list_id, user_id) DO UPDATE SET role = excluded.role`
+  ).bind(list.id, friendId, role).run();
+
+  const friend = await c.env.DB.prepare(`SELECT email FROM users WHERE id = ?`).bind(friendId).first();
+  if (friend && friend.email) {
+    const origin = new URL(c.req.url).origin;
+    const me = u.name || u.email || 'Someone';
+    c.executionCtx.waitUntil(sendEmail(c.env, {
+      to: friend.email,
+      subject: `${me} shared a list with you on Reelarr`,
+      text: `${me} shared the list "${list.name}" with you on Reelarr.\n\nOpen ${origin} → My Lists.`,
+      html: `<p><strong>${esc(me)}</strong> shared the list <strong>${esc(list.name)}</strong> with you on Reelarr.</p>
+             <p><a href="${origin}">Open Reelarr</a> → My Lists.</p>`,
+    }));
+  }
+  return c.json({ ok: true, role });
+});
+
+// A collaborator leaves a list shared with them (removes their own row). The
+// server resolves "me" from the session, so the client needn't know its user id.
+app.post('/api/lists/:id/leave', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const listId = parseInt(c.req.param('id'), 10);
+  if (!Number.isInteger(listId)) return c.json({ error: 'invalid list' }, 400);
+  await c.env.DB.prepare(
+    `DELETE FROM list_collaborators WHERE list_id = ? AND user_id = ?`
+  ).bind(listId, u.id).run();
+  return c.json({ ok: true });
+});
+
+// Owner removes a collaborator; a collaborator removes themselves (leave list).
+app.delete('/api/lists/:id/collaborators/:userId', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const listId = parseInt(c.req.param('id'), 10);
+  const target = parseInt(c.req.param('userId'), 10);
+  if (!Number.isInteger(target)) return c.json({ error: 'invalid user' }, 400);
+  const owned = await ownedList(c.env, u.id, listId);
+  if (!owned) {
+    // Not the owner — only allowed to remove yourself, and only if you're on it.
+    if (target !== u.id) return c.json({ error: 'not found' }, 404);
+    const acc = await listAccess(c.env, u.id, listId);
+    if (!acc || acc.role === 'owner') return c.json({ error: 'not found' }, 404);
+  }
+  await c.env.DB.prepare(
+    `DELETE FROM list_collaborators WHERE list_id = ? AND user_id = ?`
+  ).bind(listId, target).run();
+  return c.json({ ok: true });
+});
+
+// ── Friends (Phase 3) ───────────────────────────────────────────────────────
+// A friendship is one directional row; "friends" = an accepted row either way.
+// Add by email (must be an existing Reelarr account); the addressee confirms.
+app.get('/api/friends', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const friends = await c.env.DB.prepare(
+    `SELECT u.id, u.name, u.email, u.avatar
+     FROM friendships f
+     JOIN users u ON u.id = CASE WHEN f.requester_id = ?1 THEN f.addressee_id ELSE f.requester_id END
+     WHERE (f.requester_id = ?1 OR f.addressee_id = ?1) AND f.status = 'accepted'
+     ORDER BY u.name`
+  ).bind(u.id).all();
+  const incoming = await c.env.DB.prepare(
+    `SELECT u.id, u.name, u.email, u.avatar
+     FROM friendships f JOIN users u ON u.id = f.requester_id
+     WHERE f.addressee_id = ?1 AND f.status = 'pending' ORDER BY f.created_at DESC`
+  ).bind(u.id).all();
+  const outgoing = await c.env.DB.prepare(
+    `SELECT u.id, u.name, u.email, u.avatar
+     FROM friendships f JOIN users u ON u.id = f.addressee_id
+     WHERE f.requester_id = ?1 AND f.status = 'pending' ORDER BY f.created_at DESC`
+  ).bind(u.id).all();
+  return c.json({
+    friends: friends.results || [],
+    incoming: incoming.results || [],
+    outgoing: outgoing.results || [],
+  });
+});
+
+// Send a friend request by email. If the target already requested us, this
+// accepts that pending request (mutual → friends immediately).
+app.post('/api/friends', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const { email } = await c.req.json().catch(() => ({}));
+  const addr = (email || '').trim();
+  if (!addr) return c.json({ error: 'email required' }, 400);
+  const target = await c.env.DB.prepare(
+    `SELECT id, name, email FROM users WHERE email = ? COLLATE NOCASE LIMIT 1`
+  ).bind(addr).first();
+  if (!target) return c.json({ error: 'No Reelarr account uses that email' }, 404);
+  if (target.id === u.id) return c.json({ error: "That's your own email" }, 400);
+
+  const existing = await c.env.DB.prepare(
+    `SELECT requester_id, addressee_id, status FROM friendships
+     WHERE (requester_id = ?1 AND addressee_id = ?2) OR (requester_id = ?2 AND addressee_id = ?1)`
+  ).bind(u.id, target.id).first();
+
+  if (existing) {
+    if (existing.status === 'accepted') return c.json({ status: 'already_friends' });
+    if (existing.requester_id === u.id) return c.json({ status: 'already_requested' });
+    // They already requested us → accept it.
+    await c.env.DB.prepare(
+      `UPDATE friendships SET status = 'accepted' WHERE requester_id = ? AND addressee_id = ?`
+    ).bind(target.id, u.id).run();
+    return c.json({ status: 'accepted' });
+  }
+
+  await c.env.DB.prepare(
+    `INSERT INTO friendships (requester_id, addressee_id) VALUES (?, ?)`
+  ).bind(u.id, target.id).run();
+
+  // Notify the addressee — best-effort, in the background so the response is fast.
+  const origin = new URL(c.req.url).origin;
+  const fromName = u.name || u.email || 'Someone';
+  c.executionCtx.waitUntil(sendEmail(c.env, {
+    to: target.email,
+    subject: `${fromName} wants to be friends on Reelarr`,
+    text: `${fromName} sent you a friend request on Reelarr.\n\nOpen ${origin} and go to Friends to accept.`,
+    html: `<p><strong>${esc(fromName)}</strong> sent you a friend request on Reelarr.</p>
+           <p><a href="${origin}">Open Reelarr</a> and go to Friends to accept.</p>`,
+  }));
+  return c.json({ status: 'requested' });
+});
+
+// Accept an incoming request from :userId.
+app.post('/api/friends/:userId/accept', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const other = parseInt(c.req.param('userId'), 10);
+  if (!Number.isInteger(other)) return c.json({ error: 'invalid user' }, 400);
+  const res = await c.env.DB.prepare(
+    `UPDATE friendships SET status = 'accepted'
+     WHERE requester_id = ? AND addressee_id = ? AND status = 'pending'`
+  ).bind(other, u.id).run();
+  if (!res.meta.changes) return c.json({ error: 'no pending request' }, 404);
+
+  // Tell the original requester their request was accepted.
+  const requester = await c.env.DB.prepare(`SELECT email FROM users WHERE id = ?`).bind(other).first();
+  if (requester && requester.email) {
+    const origin = new URL(c.req.url).origin;
+    const me = u.name || u.email || 'Someone';
+    c.executionCtx.waitUntil(sendEmail(c.env, {
+      to: requester.email,
+      subject: `${me} accepted your friend request on Reelarr`,
+      text: `${me} accepted your friend request. You can now share lists.\n\n${origin}`,
+      html: `<p><strong>${esc(me)}</strong> accepted your friend request on Reelarr. You can now share lists.</p><p><a href="${origin}">Open Reelarr</a></p>`,
+    }));
+  }
+  return c.json({ ok: true });
+});
+
+// Remove a friend, decline an incoming request, or cancel an outgoing one —
+// all of which just delete the row between the two users.
+app.delete('/api/friends/:userId', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const other = parseInt(c.req.param('userId'), 10);
+  if (!Number.isInteger(other)) return c.json({ error: 'invalid user' }, 400);
+  await c.env.DB.prepare(
+    `DELETE FROM friendships
+     WHERE (requester_id = ?1 AND addressee_id = ?2) OR (requester_id = ?2 AND addressee_id = ?1)`
+  ).bind(u.id, other).run();
+  return c.json({ ok: true });
 });
 
 app.get('/api/health', (c) => c.json({ tmdb: !!c.env.TMDB_API_KEY }));

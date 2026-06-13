@@ -8,6 +8,13 @@ have been stripped — see "Update" notes below. Next step: the Workers/D1/KV po
 > entirely — no connector agent, no Phase 2. Everything "+ Add to Radarr/Sonarr" did
 > becomes "Add to list" (named watchlists in D1). The connector-agent design below is
 > kept for reference in case demand for it ever appears.
+>
+> **Update 2 (13 Jun 2026):** *arr comes back — but inverted. Not the connector agent
+> (Reelarr pushing into the user's LAN); instead Reelarr exposes each list as a
+> **read-only tokenised import URL** that Radarr/Sonarr pull on their own schedule
+> (both support "Custom Lists" from a URL — Radarr keys on `tmdbId`, Sonarr on
+> `tvdbId`). Pure GET, no stored *arr keys, no LAN access — fits the stateless Worker.
+> This is Phase 2 of the watchlists roadmap below; it supersedes "drop *arr entirely".
 
 ## Vision
 
@@ -75,9 +82,39 @@ A Worker cannot reach `http://radarr:7878`. Three options considered:
    list_items), OAuth via @hono/oauth-providers (Google only; minimal `openid profile`
    scope — no email), opaque session tokens in D1 + HttpOnly cookie, per-user watched with
    localStorage fallback + merge-on-login.
-   Deferred: skip history stays client-side until write-batching is designed; named-list
-   endpoints + UI are the next slice (tables already exist).
-4. ~~Phase 2: connector agent~~ — dropped; *arr adds become list entries.
+   Deferred: skip history stays client-side until write-batching is designed.
+4. **Phase 1c (done, 13 Jun 2026):** named watchlists — lists CRUD endpoints +
+   "+ List" / "My Lists" UI on top of the existing lists/list_items tables.
+   Owner-scoped; backend verified locally (CRUD, idempotent adds, cross-user
+   isolation). Browser click-through pending the same Google-login gate as auth.
+
+### Watchlists roadmap (in progress)
+
+Full scope, phased — friends-gated sharing, Cloudflare Email notifications.
+
+- **Phase 2 — *arr sync (done, 13 Jun 2026):** `share_token` on lists (migration
+  0002); mint/revoke endpoints + public `GET /list/:token/{radarr,sonarr}.json`
+  (token is the auth). Formats taken from Radarr/Sonarr source: Radarr uses the
+  **StevenLu** importer → `[{title, imdb_id}]` (imdb-keyed, movies); Sonarr uses
+  **Custom List** → `[{title, tvdbId, tmdbId, imdbId}]` (TV). TMDB → external ids
+  via `/external_ids`, cached 30d in KV. Per-list sync panel UI. Backend verified
+  locally; browser/real-*arr round-trip pending.
+- **Phase 3 — Friends (done, 13 Jun 2026):** OAuth scope gains `email` (backfills
+  existing users on next login); `friendships` table (migration 0003); request-by-
+  email / accept / decline / remove endpoints (mutual requests auto-accept);
+  Cloudflare Email notifications on request + accept (via `sendEmail()`). Friends
+  UI: header badge + overlay. Backend verified locally; browser round-trip pending.
+- **Phase 4 — Shared lists (done, 13 Jun 2026):** `list_collaborators` (viewer/
+  editor; migration 0004). Role-based access (`listAccess()`): owner full control,
+  editor add/remove items, viewer read-only. Share only with confirmed friends;
+  shared lists surface in the recipient's My Lists; email on share; self-leave.
+  Backend verified locally; browser round-trip pending.
+
+All four watchlist phases are code-complete and backend-verified. Outstanding is
+deploy-time work (remote D1 migrations 0001–0004, deploy to activate the EMAIL
+binding, browser click-through, and a live Radarr/Sonarr import round-trip).
+
+~~Old Phase 2: connector agent~~ — superseded; see Update 2.
 4. Existing Docker Peekarr stays maintained. Frontend + TMDB/feed logic are shareable —
    structure the port with a shared core in mind.
 

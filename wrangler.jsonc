@@ -36,7 +36,16 @@
   // setInterval prewarm cadence.
   "triggers": {
     "crons": ["*/8 * * * *"]
-  }
+  },
+
+  // Transactional email (friend requests, "list shared with you") via Cloudflare
+  // Email Sending. reelarr.app is onboarded; SPF/DKIM/DMARC are published under
+  // the cf-bounce.reelarr.app return-path subdomain (DMARC p=reject, aligned). A
+  // CLI test send was received in the inbox (13 Jun 2026). For local dev that
+  // actually delivers, temporarily add "remote": true here and remove before deploy.
+  "send_email": [
+    { "name": "EMAIL" }
+  ]
 
   // Secrets (set with `npx wrangler secret put <NAME>`, never committed):
   //   TMDB_API_KEY   — TMDB v3 key, server-side only
