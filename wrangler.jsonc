@@ -1,0 +1,34 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "reelarr",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-06-01",
+  "observability": { "enabled": true },
+
+  // Static frontend in ./public. The Worker runs first only for "/" (so it can
+  // SSR an initial feed into index.html); every other path is served
+  // asset-first, falling through to the Worker for unmatched routes (the /api/*
+  // endpoints). The Worker reads the raw index.html via the ASSETS binding.
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/"]
+  },
+
+  // Shared TMDB feed cache. One namespace; the cron prewarm writes the hot
+  // lists so user requests are mostly warm KV reads.
+  // Create with:  npx wrangler kv namespace create CACHE
+  // then paste the returned id below.
+  "kv_namespaces": [
+    { "binding": "CACHE", "id": "REPLACE_WITH_KV_ID" }
+  ],
+
+  // Keep the hot lists warm for everyone. Every 8 minutes mirrors the old
+  // setInterval prewarm cadence.
+  "triggers": {
+    "crons": ["*/8 * * * *"]
+  }
+
+  // TMDB_API_KEY is a secret, not a var — set with:
+  //   npx wrangler secret put TMDB_API_KEY
+}

@@ -1,0 +1,2 @@
+# Local secrets for `wrangler dev` — never commit. Copy to .dev.vars and fill in.
+TMDB_API_KEY=

@@ -4,7 +4,7 @@ TikTok-style trailer discovery for movies and TV. Swipe through upcoming movies 
 
 Reelarr is the hosted, multi-user fork of [Peekarr](https://github.com/sbaird123/peekarr). Peekarr remains the fully self-hosted Docker option with Radarr/Sonarr/Jellyfin integration; Reelarr drops the LAN integrations in favour of accounts and named lists, and targets Cloudflare Workers + D1 + KV.
 
-> **Status: pre-port.** The current code is the stripped-down Node/Express core inherited from Peekarr — TMDB feeds, SSR, watched list, skip history. The Cloudflare port, OAuth accounts, and lists come next. The full design lives in [docs/cloudflare-app-plan.md](docs/cloudflare-app-plan.md).
+> **Status: Cloudflare Workers port done; accounts next.** Runs on Workers (Hono) with a KV-backed shared TMDB cache and a cron prewarm. Stateless for now — the watched list and skip history live in the browser (localStorage); the TMDB key is an app-owned secret, so there's no settings page. OAuth accounts + D1-synced watched/lists are the next phase. Full design: [docs/cloudflare-app-plan.md](docs/cloudflare-app-plan.md).
 
 ![Reelarr](docs/screenshot.png)
 
@@ -18,19 +18,39 @@ Reelarr is the hosted, multi-user fork of [Peekarr](https://github.com/sbaird123
 
 ## Roadmap
 
-1. Port to Cloudflare Workers + D1 + KV (shared TMDB cache — traffic scales with the catalog, not with users)
-2. OAuth accounts (Google/GitHub) with synced watched/skip history across devices
+1. ~~Port to Cloudflare Workers + KV (shared TMDB cache — traffic scales with the catalog, not with users)~~ ✅
+2. OAuth accounts (Google/GitHub) with D1-synced watched/skip history across devices
 3. Named watchlists — what "+ Add to Radarr" used to be becomes "Add to list"
+
+## Architecture
+
+- **Worker** (`src/worker.js`) — Hono app. TMDB feed/search endpoints + SSR for `/`.
+- **KV** (`CACHE` binding) — shared SWR cache, keyed per built feed. A cron trigger (every 8 min) prewarms the hot lists so user requests are warm reads.
+- **Assets** (`public/`) — static frontend, served by Workers Assets. The Worker runs first only for `/` to inject the initial feed.
+- **Secret** — `TMDB_API_KEY`, app-owned and server-side only.
 
 ## Develop locally
 
 ```sh
 npm install
-cp .env.example .env    # optional — settings UI works without this
-npm run dev
+cp .dev.vars.example .dev.vars   # then paste your TMDB v3 API key
+npm run dev                      # wrangler dev
 ```
 
-Runs on <http://localhost:3000>. Node 20+ required. Open <http://localhost:3000/settings> and add a **TMDB API key** (free from <https://www.themoviedb.org/settings/api>), then visit `/` and start swiping.
+Get a free TMDB key from <https://www.themoviedb.org/settings/api>. The dev server runs on the port wrangler prints (default <http://localhost:8787>).
+
+## Deploy
+
+One-time setup:
+
+```sh
+npx wrangler login
+npx wrangler kv namespace create CACHE      # paste the returned id into wrangler.jsonc
+npx wrangler secret put TMDB_API_KEY        # paste your TMDB key (it's never committed)
+npm run deploy
+```
+
+Workers Paid plan recommended (the cron trigger and request volume fit comfortably in its included usage).
 
 ## Gestures
 

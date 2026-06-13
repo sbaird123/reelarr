@@ -43,26 +43,27 @@ function skipProbability(tmdbId, mediaType) {
   return Math.min(0.8, 1 - Math.pow(0.7, count));
 }
 
-// ── Watched ──────────────────────────────────────────────────────────────────
+// ── Watched (localStorage) ────────────────────────────────────────────────────
+// Stateless until accounts land — the watched list lives in the browser, keyed
+// by `${tmdbId}:${mediaType}` → title. When OAuth + D1 arrive (see
+// docs/cloudflare-app-plan.md) this moves server-side and syncs across devices.
+const WATCHED_KEY = 'reelarr_watched';
 function watchedKey(tmdbId, mediaType) { return `${tmdbId}:${mediaType || 'movie'}`; }
 
-async function loadWatched() {
-  try {
-    const res = await fetch('/api/watched/ids');
-    const rows = await res.json();
-    watchedSet = new Set(rows.map((r) => watchedKey(r.tmdb_id, r.media_type)));
-  } catch {}
+function loadWatchedStore() {
+  try { return JSON.parse(localStorage.getItem(WATCHED_KEY) || '{}'); } catch { return {}; }
 }
 
-async function markWatched(item) {
-  watchedSet.add(watchedKey(item.id, item.media_type));
-  try {
-    await fetch('/api/watched', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tmdbId: item.id, mediaType: item.media_type || 'movie', title: item.title }),
-    });
-  } catch {}
+function loadWatched() {
+  watchedSet = new Set(Object.keys(loadWatchedStore()));
+}
+
+function markWatched(item) {
+  const key = watchedKey(item.id, item.media_type);
+  watchedSet.add(key);
+  const store = loadWatchedStore();
+  store[key] = item.title || 1;
+  try { localStorage.setItem(WATCHED_KEY, JSON.stringify(store)); } catch {}
 }
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -786,20 +787,13 @@ function hydrateInitial(payload) {
 // ── Boot ──────────────────────────────────────────────────────────────────────
 (function boot() {
   renderTabs();
-
-  // Hydrate watched from SSR if present (saves one round trip).
-  const preWatched = window.__INITIAL_WATCHED__;
-  if (Array.isArray(preWatched)) {
-    watchedSet = new Set(preWatched.map((r) => watchedKey(r.tmdb_id, r.media_type)));
-  }
+  loadWatched();
 
   const initialFeed = window.__INITIAL_FEED__;
   if (initialFeed && Array.isArray(initialFeed.results) && initialFeed.results.length) {
-    if (!Array.isArray(preWatched)) loadWatched();
     hydrateInitial(initialFeed);
   } else {
-    // No SSR data (TMDB not configured, or SSR raced past its deadline) —
-    // fall back to client fetch.
-    loadWatched().then(() => loadFeed(true));
+    // No SSR data (TMDB cold, or SSR raced past its deadline) — client fetch.
+    loadFeed(true);
   }
 })();
