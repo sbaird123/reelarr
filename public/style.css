@@ -28,7 +28,11 @@ html, body {
   display: flex;
   align-items: center;
   gap: 12px;
+  /* Reserve the notch/home-indicator safe-area so the right-most control
+     (Sign in / account) is never tucked under the bezel on notched iPhones.
+     Plain fallback first for browsers without env()/max(). */
   padding: 0 16px;
+  padding: 0 max(16px, env(safe-area-inset-right)) 0 max(16px, env(safe-area-inset-left));
   background:
     linear-gradient(to bottom,
       rgba(0,0,0,.92) 0%,
@@ -161,6 +165,10 @@ html, body {
   text-shadow: 0 1px 3px rgba(0,0,0,.85);
 }
 .topbar-select option { background: #161616; color: #f0f0f0; }
+/* Older iOS Safari won't shrink a <select> below its content width via flex/
+   min-width alone — a hard max-width + ellipsis is what actually keeps the
+   row from overflowing and shoving the Sign in button off-screen. */
+.topbar-select { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #mode-select { flex-shrink: 0; }
 #list-select { flex: 1; min-width: 0; max-width: 200px; }
 
@@ -168,7 +176,20 @@ html, body {
   #mode-toggle, #nav-tabs { display: none; }
   .topbar-select { display: inline-block; }
   #topbar { gap: 8px; padding: 0 12px; }
+  #topbar { padding: 0 max(12px, env(safe-area-inset-right)) 0 max(12px, env(safe-area-inset-left)); }
   #logo { font-size: 1.15rem; }
+  #list-select { max-width: 130px; }
+}
+
+/* Very small / older iPhones (SE 1st gen, 5/5S ≈ 320px): every px counts —
+   tighten gaps, shrink the logo, and cap the list dropdown hard so the
+   Sign in / account control always stays on screen. */
+@media (max-width: 380px) {
+  #topbar { gap: 6px; }
+  #logo { font-size: 1.05rem; }
+  #mode-select { padding: 6px 26px 6px 10px; }
+  #list-select { max-width: 92px; }
+  #login-btn { padding: 7px 12px; }
 }
 
 /* ── Swiper ─────────────────────────────────────────────────────────────── */
