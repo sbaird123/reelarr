@@ -127,6 +127,13 @@ function renderAuthUI() {
   if (friendsBtn) friendsBtn.hidden = !user;
   const notifBtn = document.getElementById('notif-btn');
   if (notifBtn) notifBtn.hidden = !user;
+  // Slim sign-in strip: only for signed-out users who haven't dismissed it.
+  const banner = document.getElementById('signin-banner');
+  if (banner) {
+    let dismissed = false;
+    try { dismissed = localStorage.getItem('reelarr_hide_signin_banner') === '1'; } catch {}
+    banner.classList.toggle('hidden', !!user || dismissed);
+  }
   if (user) {
     const initial = (user.name || user.email || '?').trim().charAt(0).toUpperCase();
     slot.innerHTML = `
@@ -1510,6 +1517,15 @@ document.getElementById('list-select').addEventListener('change', (e) => {
   currentList = e.target.value;
   renderTabs();
   loadFeed(true);
+});
+
+// ── Sign-in strip wiring ──────────────────────────────────────────────────────
+document.getElementById('signin-banner-btn').addEventListener('click', () => {
+  location.href = '/auth/google';
+});
+document.getElementById('signin-banner-close').addEventListener('click', () => {
+  try { localStorage.setItem('reelarr_hide_signin_banner', '1'); } catch {}
+  document.getElementById('signin-banner').classList.add('hidden');
 });
 
 // ── Lists UI wiring ───────────────────────────────────────────────────────────

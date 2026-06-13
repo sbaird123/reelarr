@@ -538,6 +538,55 @@ html, body {
 /* ── Auth ───────────────────────────────────────────────────────────────── */
 #auth-slot { flex-shrink: 0; display: flex; align-items: center; }
 
+/* ── Signed-out sign-in strip ───────────────────────────────────────────── */
+/* Slim bar under the header — a guaranteed-visible way in for signed-out
+   users, in case the header Sign in button is hard to spot on small screens. */
+#signin-banner {
+  position: fixed;
+  top: var(--topbar-h);
+  left: 0; right: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px max(14px, env(safe-area-inset-right)) 8px max(14px, env(safe-area-inset-left));
+  background: rgba(229,9,20,.92);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  box-shadow: 0 2px 10px rgba(0,0,0,.4);
+}
+.signin-banner-text {
+  flex: 1;
+  min-width: 0;
+  font-size: .82rem;
+  font-weight: 600;
+  color: #fff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#signin-banner-btn {
+  flex-shrink: 0;
+  background: #fff;
+  border: none;
+  color: var(--accent);
+  border-radius: 16px;
+  padding: 6px 16px;
+  font-size: .82rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+#signin-banner-close {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: rgba(255,255,255,.85);
+  font-size: 1rem;
+  line-height: 1;
+  padding: 4px;
+  cursor: pointer;
+}
+
 #login-btn {
   background: var(--accent);
   border: none;
