@@ -20,7 +20,7 @@
   // Create with:  npx wrangler kv namespace create CACHE
   // then paste the returned id below.
   "kv_namespaces": [
-    { "binding": "CACHE", "id": "REPLACE_WITH_KV_ID" }
+    { "binding": "CACHE", "id": "6e01f26816c249158351162f34d4d527" }
   ],
 
   // Accounts: users, sessions, watched, lists. Migrations live in ./migrations.
@@ -29,7 +29,7 @@
   //   npx wrangler d1 migrations apply reelarr-db --local   (dev)
   //   npx wrangler d1 migrations apply reelarr-db --remote   (prod)
   "d1_databases": [
-    { "binding": "DB", "database_name": "reelarr-db", "database_id": "REPLACE_WITH_D1_ID" }
+    { "binding": "DB", "database_name": "reelarr-db", "database_id": "331c9d3c-851d-4d6a-9aa5-8588b19fd7fa" }
   ],
 
   // Keep the hot lists warm for everyone. Every 8 minutes mirrors the old
