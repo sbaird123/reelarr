@@ -540,6 +540,8 @@ app.post('/api/watched/merge', withUser, async (c) => {
 // The feature that replaces "+ Add to Radarr/Sonarr". Tables (lists/list_items)
 // shipped in 0001_init; these are the endpoints + UI on top of them.
 const MAX_LIST_NAME = 100;
+const LIST_KINDS = ['movie', 'tv', 'both'];
+const normKind = (k) => (LIST_KINDS.includes(k) ? k : 'both');
 
 // Resolve a list the caller owns, or null. Every item mutation goes through this
 // so a user can't read/write another account's list by guessing an id.
@@ -556,7 +558,7 @@ async function ownedList(env, userId, listId) {
 async function listAccess(env, userId, listId) {
   if (!Number.isInteger(listId)) return null;
   const row = await env.DB.prepare(
-    `SELECT l.id, l.name, l.share_token, l.user_id AS owner_id, c.role AS collab_role
+    `SELECT l.id, l.name, l.kind, l.share_token, l.user_id AS owner_id, c.role AS collab_role
      FROM lists l
      LEFT JOIN list_collaborators c ON c.list_id = l.id AND c.user_id = ?2
      WHERE l.id = ?1`
@@ -564,7 +566,7 @@ async function listAccess(env, userId, listId) {
   if (!row) return null;
   const role = row.owner_id === userId ? 'owner' : row.collab_role;
   if (!role) return null;
-  return { id: row.id, name: row.name, share_token: row.share_token, owner_id: row.owner_id, role };
+  return { id: row.id, name: row.name, kind: row.kind, share_token: row.share_token, owner_id: row.owner_id, role };
 }
 
 async function areFriends(env, a, b) {
@@ -623,7 +625,7 @@ app.get('/api/lists', withUser, async (c) => {
   // Lists the user owns, plus lists shared with them (collaborator rows). Owned
   // first; shared entries carry the owner's name and the caller's role.
   const owned = await c.env.DB.prepare(
-    `SELECT l.id, l.name, l.created_at, COUNT(li.tmdb_id) AS count,
+    `SELECT l.id, l.name, l.kind, l.created_at, COUNT(li.tmdb_id) AS count,
             'owner' AS role, NULL AS owner_name,
             CASE WHEN l.share_token IS NOT NULL THEN 1 ELSE 0 END AS shared
      FROM lists l LEFT JOIN list_items li ON li.list_id = l.id
@@ -632,7 +634,7 @@ app.get('/api/lists', withUser, async (c) => {
      ORDER BY l.created_at DESC`
   ).bind(u.id).all();
   const shared = await c.env.DB.prepare(
-    `SELECT l.id, l.name, l.created_at, COUNT(li.tmdb_id) AS count,
+    `SELECT l.id, l.name, l.kind, l.created_at, COUNT(li.tmdb_id) AS count,
             c.role AS role, ownr.name AS owner_name, 0 AS shared
      FROM list_collaborators c
      JOIN lists l ON l.id = c.list_id
@@ -648,13 +650,14 @@ app.get('/api/lists', withUser, async (c) => {
 app.post('/api/lists', withUser, async (c) => {
   const u = requireUser(c);
   if (!u) return c.json({ error: 'not signed in' }, 401);
-  const { name } = await c.req.json().catch(() => ({}));
+  const { name, kind } = await c.req.json().catch(() => ({}));
   const trimmed = (name || '').trim().slice(0, MAX_LIST_NAME);
   if (!trimmed) return c.json({ error: 'name required' }, 400);
+  const k = normKind(kind);
   const res = await c.env.DB.prepare(
-    `INSERT INTO lists (user_id, name) VALUES (?, ?)`
-  ).bind(u.id, trimmed).run();
-  return c.json({ id: res.meta.last_row_id, name: trimmed, count: 0 });
+    `INSERT INTO lists (user_id, name, kind) VALUES (?, ?, ?)`
+  ).bind(u.id, trimmed, k).run();
+  return c.json({ id: res.meta.last_row_id, name: trimmed, kind: k, count: 0, role: 'owner', shared: 0 });
 });
 
 app.get('/api/lists/:id', withUser, async (c) => {
@@ -669,11 +672,53 @@ app.get('/api/lists/:id', withUser, async (c) => {
   return c.json({
     id: list.id,
     name: list.name,
+    kind: list.kind,
     role: list.role,
     items: results || [],
     // *arr import URLs are owner-only — collaborators don't manage sharing.
     share: list.role === 'owner' && list.share_token ? shareInfo(c, list.share_token) : null,
   });
+});
+
+// A list played as a trailer feed in the swiper. Enriches the list's items of
+// the requested type (movie|tv) with TMDB details + a trailer, dropping any
+// without one. Per-title enrichment is cached hard in KV (details/trailers are
+// near-immutable), so adds/removes reflect immediately without refetching the rest.
+async function enrichTitle(env, kind, tmdbId) {
+  const key = `title:${kind}:${tmdbId}`;
+  try { const hit = await env.CACHE.get(key, { type: 'json' }); if (hit) return hit; }
+  catch {}
+  let out = null;
+  try {
+    const d = await tmdbRaw(env, `/${kind}/${tmdbId}`, { append_to_response: 'videos' });
+    const trailer = pickTrailer(d.videos);
+    out = {
+      id: tmdbId,
+      title: kind === 'tv' ? d.name : d.title,
+      overview: d.overview,
+      release_date: kind === 'tv' ? d.first_air_date : d.release_date,
+      poster_path: poster(d.poster_path),
+      backdrop_path: backdrop(d.backdrop_path),
+      vote_average: d.vote_average,
+      youtube_key: trailer ? trailer.key : null,
+      media_type: kind,
+    };
+  } catch { /* unreachable title → dropped from the feed */ }
+  if (out) { try { await env.CACHE.put(key, JSON.stringify(out), { expirationTtl: 60 * 60 * 24 }); } catch {} }
+  return out;
+}
+
+app.get('/api/lists/:id/feed', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const list = await listAccess(c.env, u.id, parseInt(c.req.param('id'), 10));
+  if (!list) return c.json({ error: 'not found' }, 404);
+  const type = c.req.query('type') === 'tv' ? 'tv' : 'movie';
+  const { results } = await c.env.DB.prepare(
+    `SELECT tmdb_id FROM list_items WHERE list_id = ? AND media_type = ? ORDER BY added_at DESC`
+  ).bind(list.id, type).all();
+  const enriched = await Promise.all((results || []).map((it) => enrichTitle(c.env, type, it.tmdb_id)));
+  return c.json({ results: enriched.filter((x) => x && x.youtube_key), total_pages: 1, page: 1 });
 });
 
 // Enable *arr sync for a list — mint a share token if it doesn't have one, then
@@ -745,14 +790,17 @@ app.patch('/api/lists/:id', withUser, async (c) => {
   const u = requireUser(c);
   if (!u) return c.json({ error: 'not signed in' }, 401);
   const id = parseInt(c.req.param('id'), 10);
-  const { name } = await c.req.json().catch(() => ({}));
-  const trimmed = (name || '').trim().slice(0, MAX_LIST_NAME);
-  if (!trimmed) return c.json({ error: 'name required' }, 400);
+  const { name, kind } = await c.req.json().catch(() => ({}));
+  const sets = [], binds = [];
+  if (typeof name === 'string' && name.trim()) { sets.push('name = ?'); binds.push(name.trim().slice(0, MAX_LIST_NAME)); }
+  if (LIST_KINDS.includes(kind)) { sets.push('kind = ?'); binds.push(kind); }
+  if (!sets.length) return c.json({ error: 'nothing to update' }, 400);
+  binds.push(id, u.id);
   const res = await c.env.DB.prepare(
-    `UPDATE lists SET name = ? WHERE id = ? AND user_id = ?`
-  ).bind(trimmed, id, u.id).run();
+    `UPDATE lists SET ${sets.join(', ')} WHERE id = ? AND user_id = ?`
+  ).bind(...binds).run();
   if (!res.meta.changes) return c.json({ error: 'not found' }, 404);
-  return c.json({ ok: true, name: trimmed });
+  return c.json({ ok: true });
 });
 
 app.delete('/api/lists/:id', withUser, async (c) => {

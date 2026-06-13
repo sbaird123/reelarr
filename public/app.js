@@ -222,17 +222,25 @@ async function renderListsView() {
   document.getElementById('lists-heading').textContent = 'My Lists';
   body.innerHTML = '<div class="picker-empty">Loading…</div>';
   const lists = await loadLists(true);
+  renderTabs(); // list set may have changed (created/deleted/kind) — refresh feed tabs
   body.innerHTML = '';
 
   const form = document.createElement('form');
   form.className = 'lists-create';
-  form.innerHTML = `<input type="text" placeholder="New list name…" maxlength="100" autocomplete="off" /><button type="submit">Create</button>`;
+  form.innerHTML = `
+    <input type="text" placeholder="New list name…" maxlength="100" autocomplete="off" />
+    <select class="lists-create-kind" title="List type">
+      <option value="both">Movies &amp; TV</option>
+      <option value="movie">Movies</option>
+      <option value="tv">TV</option>
+    </select>
+    <button type="submit">Create</button>`;
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const input = form.querySelector('input');
     const name = input.value.trim();
     if (!name) return;
-    await createList(name);
+    await createList(name, form.querySelector('.lists-create-kind').value);
     input.value = '';
     renderListsView();
   });
@@ -322,7 +330,8 @@ async function openListDetail(list) {
 
   // Sharing + collaborator management are owner-only.
   if (role === 'owner') {
-    body.appendChild(buildSharePanel(list, data.share));
+    body.appendChild(buildKindControl(list, data.kind));
+    body.appendChild(buildSharePanel(list, data.share, data.kind));
     body.appendChild(buildCollabPanel(list));
   } else {
     const banner = document.createElement('div');
@@ -355,6 +364,28 @@ async function openListDetail(list) {
     });
     body.appendChild(row);
   });
+}
+
+// Owner-only: set whether the list is for movies, TV, or both. Drives which
+// screen(s) it appears on as a feed and which *arr URLs show.
+function buildKindControl(list, kind) {
+  const wrap = document.createElement('div');
+  wrap.className = 'kind-control';
+  wrap.innerHTML = `
+    <label>List type</label>
+    <select class="kind-sel">
+      <option value="both">Movies &amp; TV</option>
+      <option value="movie">Movies</option>
+      <option value="tv">TV</option>
+    </select>`;
+  const sel = wrap.querySelector('.kind-sel');
+  sel.value = kind || 'both';
+  sel.addEventListener('change', async () => {
+    await updateListKind(list.id, sel.value);
+    await loadLists(true); renderTabs();
+    openListDetail(list); // re-render so the *arr URLs match the new kind
+  });
+  return wrap;
 }
 
 // Owner-only "Shared with" panel: current collaborators + add-a-friend control.
@@ -442,14 +473,18 @@ async function leaveList(listId) {
 
 // Radarr/Sonarr sync panel for a single list. share = {token, radarr, sonarr}
 // when enabled, else null.
-function buildSharePanel(list, share) {
+function buildSharePanel(list, share, kind) {
   const panel = document.createElement('div');
   panel.className = 'share-panel';
+  // Which *arr apps are relevant depends on the list's kind.
+  const showRadarr = kind !== 'tv';
+  const showSonarr = kind !== 'movie';
+  const appsLabel = showRadarr && showSonarr ? 'Radarr / Sonarr' : showRadarr ? 'Radarr' : 'Sonarr';
 
   if (!share) {
     panel.innerHTML = `
-      <div class="share-head">Sync with Radarr / Sonarr</div>
-      <p class="share-help">Generate a private import URL that Radarr and Sonarr can subscribe to.</p>
+      <div class="share-head">Sync with ${appsLabel}</div>
+      <p class="share-help">Generate a private import URL that ${appsLabel} can subscribe to.</p>
       <button class="share-enable">Enable sync</button>`;
     panel.querySelector('.share-enable').addEventListener('click', async () => {
       const res = await enableShare(list.id);
@@ -459,18 +494,21 @@ function buildSharePanel(list, share) {
     return panel;
   }
 
-  panel.innerHTML = `
-    <div class="share-head">Sync with Radarr / Sonarr</div>
-    <p class="share-help">In Radarr: <b>Settings → Lists → + → StevenLu Custom</b>, paste the Radarr URL.
-      In Sonarr: <b>Settings → Import Lists → + → Custom List</b>, paste the Sonarr URL.</p>
+  const radarrRow = showRadarr ? `
     <div class="share-url">
-      <label>Radarr (movies)</label>
+      <label>Radarr (movies) — Settings → Lists → + → StevenLu Custom</label>
       <div class="share-url-row"><input readonly value="${escapeHtml(share.radarr)}" /><button data-copy="${escapeHtml(share.radarr)}">Copy</button></div>
-    </div>
+    </div>` : '';
+  const sonarrRow = showSonarr ? `
     <div class="share-url">
-      <label>Sonarr (TV)</label>
+      <label>Sonarr (TV) — Settings → Import Lists → + → Custom List</label>
       <div class="share-url-row"><input readonly value="${escapeHtml(share.sonarr)}" /><button data-copy="${escapeHtml(share.sonarr)}">Copy</button></div>
-    </div>
+    </div>` : '';
+
+  panel.innerHTML = `
+    <div class="share-head">Sync with ${appsLabel}</div>
+    <p class="share-help">Add the URL${showRadarr && showSonarr ? 's' : ''} below as a custom import list.</p>
+    ${radarrRow}${sonarrRow}
     <button class="share-disable">Stop syncing</button>`;
 
   panel.querySelectorAll('button[data-copy]').forEach((btn) => {
@@ -501,8 +539,12 @@ async function disableShare(listId) {
   catch {}
 }
 
-async function createList(name) {
-  try { const r = await fetch('/api/lists', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }); if (r.ok) myLists = null; }
+async function createList(name, kind) {
+  try { const r = await fetch('/api/lists', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, kind }) }); if (r.ok) myLists = null; }
+  catch {}
+}
+async function updateListKind(id, kind) {
+  try { await fetch(`/api/lists/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind }) }); myLists = null; }
   catch {}
 }
 async function renameList(id, name) {
@@ -780,10 +822,20 @@ function setLoading(on) {
 }
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
+// Built-in feed tabs for the mode, plus the user's lists whose kind matches it
+// (a 'both' list shows on both screens). List tabs are keyed `list:<id>`.
+function tabsForMode() {
+  const wantMovie = currentMode === 'movies';
+  const lists = (myLists || []).filter((l) =>
+    wantMovie ? (l.kind === 'movie' || l.kind === 'both') : (l.kind === 'tv' || l.kind === 'both'));
+  return TABS[currentMode].concat(lists.map((l) => ({ list: `list:${l.id}`, label: l.name })));
+}
+
 function renderTabs() {
+  const tabs = tabsForMode();
   const container = document.getElementById('nav-tabs');
   container.innerHTML = '';
-  TABS[currentMode].forEach((t) => {
+  tabs.forEach((t) => {
     const btn = document.createElement('button');
     btn.className = 'tab' + (t.list === currentList ? ' active' : '');
     btn.dataset.list = t.list;
@@ -800,7 +852,7 @@ function renderTabs() {
   // Mirror into mobile dropdown.
   const listSel = document.getElementById('list-select');
   listSel.innerHTML = '';
-  TABS[currentMode].forEach((t) => {
+  tabs.forEach((t) => {
     const opt = document.createElement('option');
     opt.value = t.list;
     opt.textContent = t.label;
@@ -1118,6 +1170,17 @@ async function loadFeed(reset = false) {
   try {
     let results, newTotalPages, nextPage;
 
+    // A user list played as a feed — single page, fetched from the list endpoint.
+    if (String(currentList).startsWith('list:')) {
+      const listId = currentList.slice(5);
+      const type = currentMode === 'tv' ? 'tv' : 'movie';
+      const r = await fetch(`/api/lists/${listId}/feed?type=${type}`, { signal }).then((x) => x.json());
+      if (r.error) throw new Error(r.error);
+      results = shuffle(r.results || []);
+      newTotalPages = 1;
+      nextPage = 2;
+      if (!results.length) toast('No trailers in this list yet');
+    } else {
     const base = currentMode === 'tv'
       ? `/api/shows/feed?list=${currentList}`
       : `/api/feed?list=${currentList}`;
@@ -1148,6 +1211,7 @@ async function loadFeed(reset = false) {
       newTotalPages = r.total_pages;
       nextPage = currentPage + 1;
       results = shuffle(r.results || []);
+    }
     }
 
     // Data arrived — commit the reset now (tear down old players, clear cache,
@@ -1298,6 +1362,7 @@ document.getElementById('picker-new').addEventListener('submit', async (e) => {
     const list = await res.json();
     myLists = null;
     await addItemToList(list.id, pickerItem);
+    await loadLists(true); renderTabs(); // new list may be a feed tab
   } catch { toast('Could not create list'); }
 });
 
@@ -1446,6 +1511,8 @@ function hydrateInitial(payload) {
       await syncLocalToServer();
       await loadWatchedServer(); // future feed pages filter against the account
       refreshFriendBadge();      // surface any pending friend requests
+      await loadLists(true);     // so the user's lists appear as feed tabs
+      renderTabs();
     }
   });
 })();

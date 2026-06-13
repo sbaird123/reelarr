@@ -613,6 +613,28 @@ html, body {
   font-size: .95rem;
   outline: none;
 }
+.lists-create-kind, .kind-sel {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 10px;
+  padding: 0 10px;
+  font-size: .85rem;
+  font-weight: 600;
+  outline: none;
+  cursor: pointer;
+}
+.lists-create-kind option, .kind-sel option { background: #161616; }
+
+.kind-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px;
+}
+.kind-control label { font-size: .8rem; color: var(--muted); font-weight: 600; }
+.kind-control .kind-sel { padding: 8px 10px; }
+
 .lists-create button, #picker-new-btn {
   background: var(--accent);
   border: none; color: #fff;
