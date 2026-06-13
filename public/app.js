@@ -265,7 +265,7 @@ function ownedListCard(l) {
       <span class="list-card-count">${l.shared ? '<span class="sync-badge">SYNCED</span> ' : ''}${l.count} item${l.count === 1 ? '' : 's'}</span>
     </div>
     <div class="list-card-actions">
-      <button class="list-open">Open</button>
+      <button class="list-open">Manage</button>
       <button class="list-rename">Rename</button>
       <button class="list-delete">Delete</button>
     </div>`;
@@ -284,6 +284,7 @@ function sharedListCard(l) {
   const card = document.createElement('div');
   card.className = 'list-card';
   const roleLabel = l.role === 'editor' ? 'can edit' : 'view only';
+  const openLabel = l.role === 'editor' ? 'Manage' : 'View';
   card.innerHTML = `
     <div class="list-card-head">
       <span class="list-card-name">${escapeHtml(l.name)}</span>
@@ -291,7 +292,7 @@ function sharedListCard(l) {
     </div>
     <div class="list-card-sub">by ${escapeHtml(l.owner_name || 'a friend')} · ${roleLabel}</div>
     <div class="list-card-actions">
-      <button class="list-open">Open</button>
+      <button class="list-open">${openLabel}</button>
       <button class="list-leave">Leave</button>
     </div>`;
   card.querySelector('.list-open').addEventListener('click', () => openListDetail(l));
