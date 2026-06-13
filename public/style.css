@@ -602,6 +602,13 @@ html, body {
   margin: 0 auto;
 }
 
+.overlay-intro {
+  font-size: .82rem;
+  line-height: 1.45;
+  color: var(--muted);
+  margin: 0 2px 8px;
+}
+
 .lists-create { display: flex; gap: 8px; margin-bottom: 4px; }
 .lists-create input {
   flex: 1;

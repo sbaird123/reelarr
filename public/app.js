@@ -225,6 +225,11 @@ async function renderListsView() {
   renderTabs(); // list set may have changed (created/deleted/kind) — refresh feed tabs
   body.innerHTML = '';
 
+  const intro = document.createElement('p');
+  intro.className = 'overlay-intro';
+  intro.textContent = 'Save movies & TV to a list, play it as its own feed, sync it to Radarr/Sonarr, or share it with friends.';
+  body.appendChild(intro);
+
   const form = document.createElement('form');
   form.className = 'lists-create';
   form.innerHTML = `
@@ -614,6 +619,11 @@ async function renderFriendsView() {
   const data = await loadFriends();
   if (!data) { body.innerHTML = '<div class="picker-empty">Could not load friends.</div>'; return; }
   body.innerHTML = '';
+
+  const intro = document.createElement('p');
+  intro.className = 'overlay-intro';
+  intro.textContent = "Add friends by email to share lists. They confirm before you're connected — and if they're not on Reelarr yet, we'll email them an invite.";
+  body.appendChild(intro);
 
   const form = document.createElement('form');
   form.className = 'friend-add';
