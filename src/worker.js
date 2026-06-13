@@ -558,7 +558,7 @@ async function ownedList(env, userId, listId) {
 async function listAccess(env, userId, listId) {
   if (!Number.isInteger(listId)) return null;
   const row = await env.DB.prepare(
-    `SELECT l.id, l.name, l.kind, l.share_token, l.user_id AS owner_id, c.role AS collab_role
+    `SELECT l.id, l.name, l.kind, l.hide_watched, l.share_token, l.user_id AS owner_id, c.role AS collab_role
      FROM lists l
      LEFT JOIN list_collaborators c ON c.list_id = l.id AND c.user_id = ?2
      WHERE l.id = ?1`
@@ -566,7 +566,7 @@ async function listAccess(env, userId, listId) {
   if (!row) return null;
   const role = row.owner_id === userId ? 'owner' : row.collab_role;
   if (!role) return null;
-  return { id: row.id, name: row.name, kind: row.kind, share_token: row.share_token, owner_id: row.owner_id, role };
+  return { id: row.id, name: row.name, kind: row.kind, hide_watched: row.hide_watched, share_token: row.share_token, owner_id: row.owner_id, role };
 }
 
 async function areFriends(env, a, b) {
@@ -625,7 +625,7 @@ app.get('/api/lists', withUser, async (c) => {
   // Lists the user owns, plus lists shared with them (collaborator rows). Owned
   // first; shared entries carry the owner's name and the caller's role.
   const owned = await c.env.DB.prepare(
-    `SELECT l.id, l.name, l.kind, l.created_at, COUNT(li.tmdb_id) AS count,
+    `SELECT l.id, l.name, l.kind, l.hide_watched, l.created_at, COUNT(li.tmdb_id) AS count,
             'owner' AS role, NULL AS owner_name,
             CASE WHEN l.share_token IS NOT NULL THEN 1 ELSE 0 END AS shared
      FROM lists l LEFT JOIN list_items li ON li.list_id = l.id
@@ -634,7 +634,7 @@ app.get('/api/lists', withUser, async (c) => {
      ORDER BY l.created_at DESC`
   ).bind(u.id).all();
   const shared = await c.env.DB.prepare(
-    `SELECT l.id, l.name, l.kind, l.created_at, COUNT(li.tmdb_id) AS count,
+    `SELECT l.id, l.name, l.kind, l.hide_watched, l.created_at, COUNT(li.tmdb_id) AS count,
             c.role AS role, ownr.name AS owner_name, 0 AS shared
      FROM list_collaborators c
      JOIN lists l ON l.id = c.list_id
@@ -673,6 +673,7 @@ app.get('/api/lists/:id', withUser, async (c) => {
     id: list.id,
     name: list.name,
     kind: list.kind,
+    hide_watched: list.hide_watched,
     role: list.role,
     items: results || [],
     // *arr import URLs are owner-only — collaborators don't manage sharing.
@@ -790,10 +791,12 @@ app.patch('/api/lists/:id', withUser, async (c) => {
   const u = requireUser(c);
   if (!u) return c.json({ error: 'not signed in' }, 401);
   const id = parseInt(c.req.param('id'), 10);
-  const { name, kind } = await c.req.json().catch(() => ({}));
+  const body = await c.req.json().catch(() => ({}));
+  const { name, kind } = body;
   const sets = [], binds = [];
   if (typeof name === 'string' && name.trim()) { sets.push('name = ?'); binds.push(name.trim().slice(0, MAX_LIST_NAME)); }
   if (LIST_KINDS.includes(kind)) { sets.push('kind = ?'); binds.push(kind); }
+  if (typeof body.hide_watched === 'boolean') { sets.push('hide_watched = ?'); binds.push(body.hide_watched ? 1 : 0); }
   if (!sets.length) return c.json({ error: 'nothing to update' }, 400);
   binds.push(id, u.id);
   const res = await c.env.DB.prepare(

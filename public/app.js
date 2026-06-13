@@ -331,6 +331,7 @@ async function openListDetail(list) {
   // Sharing + collaborator management are owner-only.
   if (role === 'owner') {
     body.appendChild(buildKindControl(list, data.kind));
+    body.appendChild(buildWatchedToggle(list, data.hide_watched));
     body.appendChild(buildSharePanel(list, data.share, data.kind));
     body.appendChild(buildCollabPanel(list));
   } else {
@@ -386,6 +387,27 @@ function buildKindControl(list, kind) {
     openListDetail(list); // re-render so the *arr URLs match the new kind
   });
   return wrap;
+}
+
+// Owner-only: whether this list's feed hides titles you've marked watched.
+function buildWatchedToggle(list, hideWatched) {
+  const wrap = document.createElement('label');
+  wrap.className = 'list-toggle';
+  wrap.innerHTML = `<input type="checkbox" ${hideWatched ? 'checked' : ''} />
+    <span>Hide titles I've watched from this list's feed</span>`;
+  const cb = wrap.querySelector('input');
+  cb.addEventListener('change', async () => {
+    await updateListWatched(list.id, cb.checked);
+    await loadLists(true);
+    // If this list is the feed currently on screen, refresh it to reflect the change.
+    if (currentList === `list:${list.id}`) loadFeed(true);
+  });
+  return wrap;
+}
+
+async function updateListWatched(id, hide) {
+  try { await fetch(`/api/lists/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hide_watched: hide }) }); myLists = null; }
+  catch {}
 }
 
 // Owner-only "Shared with" panel: current collaborators + add-a-friend control.
@@ -1152,6 +1174,15 @@ async function loadFeed(reset = false) {
 
   loading = true;
 
+  // List feeds are curated, so they skip discovery's skip-deprioritization and
+  // hide watched titles only when the list's "hide watched" option is on.
+  const isListFeed = String(currentList).startsWith('list:');
+  let listHideWatched = true;
+  if (isListFeed) {
+    const l = (myLists || []).find((x) => `list:${x.id}` === currentList);
+    listHideWatched = l ? !!l.hide_watched : true;
+  }
+
   // Only show the full-screen spinner on cold load (nothing visible yet).
   // For tab switches we keep the old slides on-screen during the fetch so the
   // UI doesn't feel like it's reloading — the swap happens atomically once
@@ -1227,10 +1258,17 @@ async function loadFeed(reset = false) {
     totalPages = newTotalPages;
     currentPage = nextPage;
 
-    const filtered = results.filter((item) =>
-      !watchedSet.has(watchedKey(item.id, item.media_type)) &&
-      Math.random() >= skipProbability(item.id, item.media_type)
-    );
+    const filtered = results.filter((item) => {
+      if (isListFeed) {
+        // Curated list: no skip-deprioritization; hide watched only if opted in.
+        return !(listHideWatched && watchedSet.has(watchedKey(item.id, item.media_type)));
+      }
+      return !watchedSet.has(watchedKey(item.id, item.media_type)) &&
+        Math.random() >= skipProbability(item.id, item.media_type);
+    });
+    if (isListFeed && reset && !filtered.length && results.length) {
+      toast('Everything in this list is marked watched — turn off “Hide watched” in the list options to show them');
+    }
     const startIndex = itemCache.length;
     itemCache.push(...filtered);
 

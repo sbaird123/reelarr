@@ -635,6 +635,17 @@ html, body {
 .kind-control label { font-size: .8rem; color: var(--muted); font-weight: 600; }
 .kind-control .kind-sel { padding: 8px 10px; }
 
+.list-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 2px;
+  font-size: .85rem;
+  color: var(--text);
+  cursor: pointer;
+}
+.list-toggle input { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
+
 .lists-create button, #picker-new-btn {
   background: var(--accent);
   border: none; color: #fff;
