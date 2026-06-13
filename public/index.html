@@ -48,6 +48,12 @@
       </svg>
       <span id="friends-badge" class="hidden">0</span>
     </button>
+    <button id="notif-btn" title="Notifications" hidden>
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+      </svg>
+      <span id="notif-badge" class="hidden">0</span>
+    </button>
     <div id="auth-slot"></div>
   </header>
 
@@ -67,6 +73,27 @@
       <button id="lists-close">&#10005;</button>
     </div>
     <div id="lists-body"></div>
+  </div>
+
+  <!-- Notifications overlay -->
+  <div id="notif-overlay" class="hidden">
+    <div id="notif-bar">
+      <h2>Notifications</h2>
+      <button id="notif-close">&#10005;</button>
+    </div>
+    <div id="notif-body"></div>
+  </div>
+
+  <!-- Recommend-to-friend bottom sheet -->
+  <div id="rec-overlay" class="hidden">
+    <div id="rec-sheet">
+      <div id="rec-head">
+        <span id="rec-title">Recommend to a friend</span>
+        <button id="rec-close">&#10005;</button>
+      </div>
+      <input id="rec-note" type="text" placeholder="Add a note (optional)…" autocomplete="off" maxlength="300" />
+      <div id="rec-friends"></div>
+    </div>
   </div>
 
   <!-- Add-to-list bottom sheet -->

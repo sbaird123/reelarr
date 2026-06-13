@@ -1082,6 +1082,71 @@ app.delete('/api/friends/:userId', withUser, async (c) => {
   return c.json({ ok: true });
 });
 
+// ── Recommendations (friend → friend) ───────────────────────────────────────
+app.post('/api/recommend', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const body = await c.req.json().catch(() => ({}));
+  const to = parseInt(body.toUserId, 10);
+  const tmdbId = parseInt(body.tmdbId, 10);
+  if (!Number.isInteger(to) || !Number.isInteger(tmdbId)) return c.json({ error: 'toUserId and tmdbId required' }, 400);
+  if (to === u.id) return c.json({ error: "can't recommend to yourself" }, 400);
+  if (!(await areFriends(c.env, u.id, to))) return c.json({ error: 'you can only recommend to friends' }, 403);
+  const mediaType = body.mediaType === 'tv' ? 'tv' : 'movie';
+  const title = body.title || null;
+  const note = (body.note || '').trim().slice(0, 300) || null;
+  await c.env.DB.prepare(
+    `INSERT INTO recommendations (from_user_id, to_user_id, tmdb_id, media_type, title, note) VALUES (?, ?, ?, ?, ?, ?)`
+  ).bind(u.id, to, tmdbId, mediaType, title, note).run();
+
+  const friend = await c.env.DB.prepare(`SELECT email FROM users WHERE id = ?`).bind(to).first();
+  if (friend && friend.email) {
+    const origin = new URL(c.req.url).origin;
+    const me = u.name || u.email || 'A friend';
+    const what = title || 'something';
+    c.executionCtx.waitUntil(sendEmail(c.env, {
+      to: friend.email,
+      subject: `${me} recommended ${what} on Reelarr`,
+      text: `${me} recommended ${what} to you on Reelarr.${note ? `\n\n"${note}"` : ''}\n\nOpen ${origin} to see it.`,
+      html: `<p><strong>${esc(me)}</strong> recommended <strong>${esc(what)}</strong> to you on Reelarr.</p>${note ? `<p style="color:#555">"${esc(note)}"</p>` : ''}<p><a href="${origin}">Open Reelarr</a></p>`,
+    }));
+  }
+  return c.json({ ok: true });
+});
+
+app.get('/api/recommendations', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const { results } = await c.env.DB.prepare(
+    `SELECT r.id, r.tmdb_id, r.media_type, r.title, r.note, r.seen, r.created_at,
+            usr.name AS from_name, usr.avatar AS from_avatar
+     FROM recommendations r JOIN users usr ON usr.id = r.from_user_id
+     WHERE r.to_user_id = ? ORDER BY r.created_at DESC LIMIT 100`
+  ).bind(u.id).all();
+  const recs = results || [];
+  return c.json({ recommendations: recs, unseen: recs.filter((r) => !r.seen).length });
+});
+
+app.post('/api/recommendations/seen', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  await c.env.DB.prepare(
+    `UPDATE recommendations SET seen = 1 WHERE to_user_id = ? AND seen = 0`
+  ).bind(u.id).run();
+  return c.json({ ok: true });
+});
+
+app.delete('/api/recommendations/:id', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const id = parseInt(c.req.param('id'), 10);
+  if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+  await c.env.DB.prepare(
+    `DELETE FROM recommendations WHERE id = ? AND to_user_id = ?`
+  ).bind(id, u.id).run();
+  return c.json({ ok: true });
+});
+
 app.get('/api/health', (c) => c.json({ tmdb: !!c.env.TMDB_API_KEY }));
 
 export default {

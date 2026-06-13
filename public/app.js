@@ -125,6 +125,8 @@ function renderAuthUI() {
   if (listsBtn) listsBtn.hidden = !user;
   const friendsBtn = document.getElementById('friends-btn');
   if (friendsBtn) friendsBtn.hidden = !user;
+  const notifBtn = document.getElementById('notif-btn');
+  if (notifBtn) notifBtn.hidden = !user;
   if (user) {
     const initial = (user.name || user.email || '?').trim().charAt(0).toUpperCase();
     slot.innerHTML = `
@@ -685,6 +687,120 @@ async function cancelInvite(email) {
   try { await fetch(`/api/friends/invite?email=${encodeURIComponent(email)}`, { method: 'DELETE' }); } catch {}
 }
 
+// ── Recommend to a friend ─────────────────────────────────────────────────────
+let recItem = null;
+
+async function openRecommend(item) {
+  if (!user) { toast('Sign in to recommend to friends'); return; }
+  recItem = item;
+  document.getElementById('rec-title').textContent = `Recommend "${item.title}"`;
+  document.getElementById('rec-note').value = '';
+  document.getElementById('rec-overlay').classList.remove('hidden');
+  const box = document.getElementById('rec-friends');
+  box.innerHTML = '<div class="picker-empty">Loading…</div>';
+  const data = await loadFriends();
+  const friends = (data && data.friends) || [];
+  if (!friends.length) {
+    box.innerHTML = '<div class="picker-empty">Add friends first to recommend titles.</div>';
+    return;
+  }
+  box.innerHTML = '';
+  friends.forEach((f) => {
+    const row = document.createElement('button');
+    row.className = 'picker-row';
+    row.innerHTML = `<span class="picker-row-name">${escapeHtml(f.name || f.email)}</span><span class="picker-row-count">Send</span>`;
+    row.addEventListener('click', () => sendRecommend(f.id, f.name || f.email));
+    box.appendChild(row);
+  });
+}
+
+function closeRecommend() {
+  document.getElementById('rec-overlay').classList.add('hidden');
+  recItem = null;
+}
+
+async function sendRecommend(toUserId, name) {
+  if (!recItem) return;
+  const note = document.getElementById('rec-note').value.trim();
+  try {
+    const r = await fetch('/api/recommend', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ toUserId, tmdbId: recItem.id, mediaType: recItem.media_type || 'movie', title: recItem.title, note }),
+    });
+    if (!r.ok) throw new Error();
+    toast(`Recommended to ${name}`);
+    closeRecommend();
+  } catch { toast('Could not send recommendation'); }
+}
+
+// ── Notifications (recommendations inbox) ──────────────────────────────────────
+async function loadRecommendations() {
+  try { const r = await fetch('/api/recommendations'); return r.ok ? await r.json() : null; }
+  catch { return null; }
+}
+
+async function refreshNotifBadge() {
+  if (!user) return;
+  const data = await loadRecommendations();
+  const badge = document.getElementById('notif-badge');
+  if (!badge) return;
+  const n = data ? data.unseen : 0;
+  badge.textContent = n;
+  badge.classList.toggle('hidden', !n);
+}
+
+async function openNotifications() {
+  if (!user) { toast('Sign in to see recommendations'); return; }
+  document.getElementById('notif-overlay').classList.remove('hidden');
+  await renderNotifications();
+  // Opening counts as reading them — clear the badge.
+  try { await fetch('/api/recommendations/seen', { method: 'POST' }); } catch {}
+  const badge = document.getElementById('notif-badge');
+  if (badge) badge.classList.add('hidden');
+}
+
+function closeNotifications() {
+  document.getElementById('notif-overlay').classList.add('hidden');
+}
+
+async function renderNotifications() {
+  const body = document.getElementById('notif-body');
+  body.innerHTML = '<div class="picker-empty">Loading…</div>';
+  const data = await loadRecommendations();
+  const recs = (data && data.recommendations) || [];
+  body.innerHTML = '';
+  if (!recs.length) {
+    body.innerHTML = '<div class="picker-empty">No recommendations yet. When a friend recommends a movie or show, it shows up here.</div>';
+    return;
+  }
+  recs.forEach((r) => {
+    const row = document.createElement('div');
+    row.className = 'notif-row' + (r.seen ? '' : ' unseen');
+    const badge = r.media_type === 'tv' ? '<span class="media-badge">TV</span>' : '';
+    const note = r.note ? `<span class="notif-note">"${escapeHtml(r.note)}"</span>` : '';
+    row.innerHTML = `
+      <div class="notif-meta">
+        <span class="notif-text"><strong>${escapeHtml(r.from_name || 'A friend')}</strong> recommended <strong>${escapeHtml(r.title || `#${r.tmdb_id}`)}</strong> ${badge}</span>
+        ${note}
+      </div>
+      <div class="notif-actions">
+        <button class="notif-add">+ List</button>
+        <button class="notif-dismiss" title="Dismiss">&#10005;</button>
+      </div>`;
+    row.querySelector('.notif-add').addEventListener('click', () =>
+      openPicker({ id: r.tmdb_id, media_type: r.media_type, title: r.title }));
+    row.querySelector('.notif-dismiss').addEventListener('click', async () => {
+      await dismissRecommendation(r.id);
+      row.remove();
+    });
+    body.appendChild(row);
+  });
+}
+
+async function dismissRecommendation(id) {
+  try { await fetch(`/api/recommendations/${id}`, { method: 'DELETE' }); } catch {}
+}
+
 function friendSection(text) {
   const h = document.createElement('div');
   h.className = 'friend-section';
@@ -944,6 +1060,7 @@ function buildSlide(item, index) {
       <div class="slide-actions">
         <button class="btn-watched">Watched</button>
         <button class="btn-list">+ List</button>
+        <button class="btn-rec">Recommend</button>
         <button class="btn-skip">Skip</button>
       </div>
     </div>
@@ -963,6 +1080,7 @@ function buildSlide(item, index) {
   });
 
   slide.querySelector('.btn-list').addEventListener('click', () => openPicker(item));
+  slide.querySelector('.btn-rec').addEventListener('click', () => openRecommend(item));
 
   slide.querySelector('.btn-skip').addEventListener('click', () => {
     recordSkip(item.id, item.media_type);
@@ -1390,6 +1508,12 @@ document.getElementById('lists-btn').addEventListener('click', openListsView);
 document.getElementById('lists-close').addEventListener('click', closeListsView);
 document.getElementById('friends-btn').addEventListener('click', openFriendsView);
 document.getElementById('friends-close').addEventListener('click', closeFriendsView);
+document.getElementById('notif-btn').addEventListener('click', openNotifications);
+document.getElementById('notif-close').addEventListener('click', closeNotifications);
+document.getElementById('rec-close').addEventListener('click', closeRecommend);
+document.getElementById('rec-overlay').addEventListener('click', (e) => {
+  if (e.target.id === 'rec-overlay') closeRecommend();
+});
 document.getElementById('picker-close').addEventListener('click', closePicker);
 document.getElementById('picker-overlay').addEventListener('click', (e) => {
   // Tap the dimmed backdrop (not the sheet) to dismiss.
@@ -1559,6 +1683,9 @@ function hydrateInitial(payload) {
       await syncLocalToServer();
       await loadWatchedServer(); // future feed pages filter against the account
       refreshFriendBadge();      // surface any pending friend requests
+      refreshNotifBadge();       // surface unseen recommendations
+      // Light poll so notifications appear while the tab stays open.
+      setInterval(() => { if (user) { refreshNotifBadge(); refreshFriendBadge(); } }, 60000);
       await loadLists(true);     // so the user's lists appear as feed tabs
       renderTabs();
     }
