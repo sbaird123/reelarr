@@ -32,8 +32,10 @@ same cached TMDB entries, so TMDB traffic scales with the catalog, not with user
 
 ## Accounts
 
-- **Auth: OAuth (Google/GitHub) + signed session cookie, sessions in D1.** Least code,
-  no password storage, right fit for the homelab audience. (Magic links = second choice,
+- **Auth: OAuth + session cookie, sessions in D1.** Shipped Google-only (13 Jun 2026 —
+  GitHub dropped as unused; the `provider` column stays generic so it can return without a
+  migration). Opaque random session token validated against D1, so no cookie signing
+  needed. Least code, no password storage. (Magic links = second choice,
   needs an email sender. Passwords = skip.)
 - Schema: `users`, `sessions`; existing `watched` gains `user_id`; new `lists` /
   `list_items` for named watchlists.
@@ -70,8 +72,9 @@ A Worker cannot reach `http://radarr:7878`. Three options considered:
 2. **Phase 1a (done, 13 Jun 2026):** Workers + KV port. Hono app, KV-backed SWR cache
    keyed per built feed, cron prewarm, Workers Assets, app-owned TMDB key. Stateless.
 3. **Phase 1b (done, 13 Jun 2026):** accounts. D1 schema (users/sessions/watched/lists/
-   list_items), OAuth via @hono/oauth-providers (Google + GitHub), opaque session tokens
-   in D1 + HttpOnly cookie, per-user watched with localStorage fallback + merge-on-login.
+   list_items), OAuth via @hono/oauth-providers (Google only; minimal `openid profile`
+   scope — no email), opaque session tokens in D1 + HttpOnly cookie, per-user watched with
+   localStorage fallback + merge-on-login.
    Deferred: skip history stays client-side until write-batching is designed; named-list
    endpoints + UI are the next slice (tables already exist).
 4. ~~Phase 2: connector agent~~ — dropped; *arr adds become list entries.

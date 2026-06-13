@@ -537,39 +537,3 @@ html, body {
   cursor: pointer;
 }
 #logout-btn:hover { background: rgba(255,255,255,.18); }
-
-#login-menu {
-  position: fixed;
-  top: calc(var(--topbar-h) + 6px);
-  right: 12px;
-  z-index: 250;
-  background: var(--surface);
-  border: 1px solid rgba(255,255,255,.12);
-  border-radius: 12px;
-  padding: 6px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  box-shadow: 0 10px 30px rgba(0,0,0,.5);
-  min-width: 220px;
-}
-#login-menu.hidden { display: none; }
-.login-opt {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  color: var(--text);
-  text-decoration: none;
-  font-size: .9rem;
-  font-weight: 600;
-}
-.login-opt:hover { background: rgba(255,255,255,.08); }
-.login-glyph {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 22px; height: 22px;
-  border-radius: 50%;
-  background: rgba(255,255,255,.1);
-  font-size: .8rem; font-weight: 800;
-}

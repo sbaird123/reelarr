@@ -132,9 +132,8 @@ function renderAuthUI() {
     document.getElementById('logout-btn').addEventListener('click', logout);
   } else {
     slot.innerHTML = `<button id="login-btn">Sign in</button>`;
-    document.getElementById('login-btn').addEventListener('click', (e) => {
-      e.stopPropagation();
-      document.getElementById('login-menu').classList.toggle('hidden');
+    document.getElementById('login-btn').addEventListener('click', () => {
+      location.href = '/auth/google';
     });
   }
 }
@@ -877,14 +876,6 @@ function hydrateInitial(payload) {
     if (user) {
       await syncLocalToServer();
       await loadWatchedServer(); // future feed pages filter against the account
-    }
-  });
-
-  // Dismiss the login menu on any outside click.
-  document.addEventListener('click', (e) => {
-    const menu = document.getElementById('login-menu');
-    if (menu && !menu.classList.contains('hidden') && !e.target.closest('#login-menu, #login-btn')) {
-      menu.classList.add('hidden');
     }
   });
 })();

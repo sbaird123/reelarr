@@ -42,6 +42,4 @@
   //   TMDB_API_KEY   — TMDB v3 key, server-side only
   //   GOOGLE_ID      — Google OAuth client id
   //   GOOGLE_SECRET  — Google OAuth client secret
-  //   GITHUB_ID      — GitHub OAuth app client id
-  //   GITHUB_SECRET  — GitHub OAuth app client secret
 }

@@ -1,7 +1,6 @@
 import { Hono } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { googleAuth } from '@hono/oauth-providers/google';
-import { githubAuth } from '@hono/oauth-providers/github';
 
 // ── TMDB ──────────────────────────────────────────────────────────────────────
 const TMDB = 'https://api.themoviedb.org/3';
@@ -396,25 +395,18 @@ app.get('/api/shows/search', async (c) => {
 });
 
 // ── OAuth login ───────────────────────────────────────────────────────────────
-// The middleware's mount path doubles as the OAuth redirect URI — so Google and
-// GitHub must each have http://localhost:8787/auth/<provider> (dev) and
-// https://<deployed-host>/auth/<provider> (prod) registered as redirect URIs.
-// client id/secret are read from env (GOOGLE_ID/GOOGLE_SECRET, GITHUB_ID/GITHUB_SECRET).
+// The middleware's mount path doubles as the OAuth redirect URI — so Google must
+// have http://localhost:8787/auth/google (dev) and
+// https://<deployed-host>/auth/google (prod) registered as redirect URIs.
+// client id/secret are read from env (GOOGLE_ID / GOOGLE_SECRET).
+// (The users.provider column is generic, so another provider can be added later
+// without a migration.)
 app.use('/auth/google', (c, next) =>
-  googleAuth({ scope: ['openid', 'email', 'profile'] })(c, next));
+  googleAuth({ scope: ['openid', 'profile'] })(c, next));
 app.get('/auth/google', (c) => {
   const u = c.get('user-google');
   return completeLogin(c, u && {
     provider: 'google', providerId: u.id, email: u.email, name: u.name, avatar: u.picture,
-  });
-});
-
-app.use('/auth/github', (c, next) =>
-  githubAuth({ scope: ['read:user', 'user:email'] })(c, next));
-app.get('/auth/github', (c) => {
-  const u = c.get('user-github');
-  return completeLogin(c, u && {
-    provider: 'github', providerId: u.id, email: u.email, name: u.name || u.login, avatar: u.avatar_url,
   });
 });
 
