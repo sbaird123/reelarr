@@ -161,7 +161,7 @@ async function loadLists(force = false) {
 
 // Bottom-sheet picker: drop the given item into a list, or spin up a new one.
 async function openPicker(item) {
-  if (!user) { toast('Sign in to save to lists'); return; }
+  if (!user) { requireSignIn('Sign in to save titles to your lists.'); return; }
   pickerItem = item;
   document.getElementById('picker-title').textContent = `Add "${item.title}" to…`;
   document.getElementById('picker-overlay').classList.remove('hidden');
@@ -210,7 +210,7 @@ async function addItemToList(listId, item) {
 
 // "My Lists" manager overlay — list of lists, drilling into one shows its items.
 async function openListsView() {
-  if (!user) { toast('Sign in to use lists'); return; }
+  if (!user) { requireSignIn('Sign in to create and manage lists.'); return; }
   document.getElementById('lists-overlay').classList.remove('hidden');
   await renderListsView();
 }
@@ -607,7 +607,7 @@ async function refreshFriendBadge() {
 }
 
 function openFriendsView() {
-  if (!user) { toast('Sign in to add friends'); return; }
+  if (!user) { requireSignIn('Sign in to add friends.'); return; }
   document.getElementById('friends-overlay').classList.remove('hidden');
   renderFriendsView();
 }
@@ -691,7 +691,7 @@ async function cancelInvite(email) {
 let recItem = null;
 
 async function openRecommend(item) {
-  if (!user) { toast('Sign in to recommend to friends'); return; }
+  if (!user) { requireSignIn('Sign in to recommend titles to friends.'); return; }
   recItem = item;
   document.getElementById('rec-title').textContent = `Recommend "${item.title}"`;
   document.getElementById('rec-note').value = '';
@@ -750,7 +750,7 @@ async function refreshNotifBadge() {
 }
 
 async function openNotifications() {
-  if (!user) { toast('Sign in to see recommendations'); return; }
+  if (!user) { requireSignIn('Sign in to see recommendations from friends.'); return; }
   document.getElementById('notif-overlay').classList.remove('hidden');
   await renderNotifications();
   // Opening counts as reading them — clear the badge.
@@ -967,6 +967,13 @@ function toast(msg, duration = 2800) {
 
 function setLoading(on) {
   document.getElementById('loading-overlay').classList.toggle('hidden', !on);
+}
+
+// Signed-out users can still tap slide actions like "+ List" / "Recommend".
+// Rather than dead-ending on a toast — the header Sign in button can be hard to
+// spot or cut off on small phones — offer to start the sign-in flow right here.
+function requireSignIn(reason) {
+  if (confirm(`${reason}\n\nSign in now?`)) location.href = '/auth/google';
 }
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
