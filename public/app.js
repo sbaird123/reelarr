@@ -1083,7 +1083,9 @@ function buildSlide(item, index) {
   slide.querySelector('.btn-rec').addEventListener('click', () => openRecommend(item));
 
   slide.querySelector('.btn-skip').addEventListener('click', () => {
-    recordSkip(item.id, item.media_type);
+    // Don't recordSkip() here — advanceOrLoad() slides to the next item, and the
+    // resulting slideChangeTransitionEnd records the skip for the slide we left.
+    // Calling it here too would double-count this item in skipProbability.
     advanceOrLoad();
   });
 
@@ -1340,37 +1342,37 @@ async function loadFeed(reset = false) {
       nextPage = 2;
       if (!results.length) toast('No trailers in this list yet');
     } else {
-    const base = currentMode === 'tv'
-      ? `/api/shows/feed?list=${currentList}`
-      : `/api/feed?list=${currentList}`;
+      const base = currentMode === 'tv'
+        ? `/api/shows/feed?list=${currentList}`
+        : `/api/feed?list=${currentList}`;
 
-    if (reset) {
-      let [r1, r2] = await Promise.all([
-        fetch(`${base}&page=${fetchPage}`, { signal }).then((r) => r.json()),
-        fetch(`${base}&page=${fetchPage + 1}`, { signal }).then((r) => r.json()),
-      ]);
-      if (r1.error) throw new Error(r1.error);
-      // Random start can overshoot a short list (or land on pages the server
-      // filtered to nothing, e.g. already-released "upcoming" movies). Don't
-      // strand the user on a blank feed — fall back to the front.
-      if (fetchPage > 1 && !(r1.results || []).length && !(r2.results || []).length) {
-        fetchPage = 1;
-        [r1, r2] = await Promise.all([
-          fetch(`${base}&page=1`, { signal }).then((r) => r.json()),
-          fetch(`${base}&page=2`, { signal }).then((r) => r.json()),
+      if (reset) {
+        let [r1, r2] = await Promise.all([
+          fetch(`${base}&page=${fetchPage}`, { signal }).then((r) => r.json()),
+          fetch(`${base}&page=${fetchPage + 1}`, { signal }).then((r) => r.json()),
         ]);
         if (r1.error) throw new Error(r1.error);
+        // Random start can overshoot a short list (or land on pages the server
+        // filtered to nothing, e.g. already-released "upcoming" movies). Don't
+        // strand the user on a blank feed — fall back to the front.
+        if (fetchPage > 1 && !(r1.results || []).length && !(r2.results || []).length) {
+          fetchPage = 1;
+          [r1, r2] = await Promise.all([
+            fetch(`${base}&page=1`, { signal }).then((r) => r.json()),
+            fetch(`${base}&page=2`, { signal }).then((r) => r.json()),
+          ]);
+          if (r1.error) throw new Error(r1.error);
+        }
+        newTotalPages = r1.total_pages;
+        nextPage = fetchPage + 2;
+        results = shuffle([...(r1.results || []), ...(r2.results || [])]);
+      } else {
+        const r = await fetch(`${base}&page=${currentPage}`, { signal }).then((r) => r.json());
+        if (r.error) throw new Error(r.error);
+        newTotalPages = r.total_pages;
+        nextPage = currentPage + 1;
+        results = shuffle(r.results || []);
       }
-      newTotalPages = r1.total_pages;
-      nextPage = fetchPage + 2;
-      results = shuffle([...(r1.results || []), ...(r2.results || [])]);
-    } else {
-      const r = await fetch(`${base}&page=${currentPage}`, { signal }).then((r) => r.json());
-      if (r.error) throw new Error(r.error);
-      newTotalPages = r.total_pages;
-      nextPage = currentPage + 1;
-      results = shuffle(r.results || []);
-    }
     }
 
     // Data arrived — commit the reset now (tear down old players, clear cache,
