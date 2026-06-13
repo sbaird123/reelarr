@@ -4,7 +4,7 @@ TikTok-style trailer discovery for movies and TV. Swipe through upcoming movies 
 
 Reelarr is the hosted, multi-user fork of [Peekarr](https://github.com/sbaird123/peekarr). Peekarr remains the fully self-hosted Docker option with Radarr/Sonarr/Jellyfin integration; Reelarr drops the LAN integrations in favour of accounts and named lists, and targets Cloudflare Workers + D1 + KV.
 
-> **Status: Cloudflare Workers port done; accounts next.** Runs on Workers (Hono) with a KV-backed shared TMDB cache and a cron prewarm. Stateless for now — the watched list and skip history live in the browser (localStorage); the TMDB key is an app-owned secret, so there's no settings page. OAuth accounts + D1-synced watched/lists are the next phase. Full design: [docs/cloudflare-app-plan.md](docs/cloudflare-app-plan.md).
+> **Status: Workers + accounts.** Runs on Workers (Hono) with a KV-backed shared TMDB cache and a cron prewarm. OAuth sign-in (Google + GitHub) with sessions and a per-user watched list in D1; signed out, the watched list falls back to localStorage and merges into your account on first sign-in. Skip history is still local (it wants write-batching before it goes server-side). Named watchlists are next. Full design: [docs/cloudflare-app-plan.md](docs/cloudflare-app-plan.md).
 
 ![Reelarr](docs/screenshot.png)
 
@@ -19,25 +19,28 @@ Reelarr is the hosted, multi-user fork of [Peekarr](https://github.com/sbaird123
 ## Roadmap
 
 1. ~~Port to Cloudflare Workers + KV (shared TMDB cache — traffic scales with the catalog, not with users)~~ ✅
-2. OAuth accounts (Google/GitHub) with D1-synced watched/skip history across devices
-3. Named watchlists — what "+ Add to Radarr" used to be becomes "Add to list"
+2. ~~OAuth accounts (Google/GitHub) with D1-synced watched across devices~~ ✅
+3. Named watchlists — what "+ Add to Radarr" used to be becomes "Add to list" (D1 tables exist; endpoints + UI next)
+4. Move skip history server-side with write-batching
 
 ## Architecture
 
-- **Worker** (`src/worker.js`) — Hono app. TMDB feed/search endpoints + SSR for `/`.
+- **Worker** (`src/worker.js`) — Hono app. TMDB feed/search + SSR for `/`, OAuth login, sessions, per-user watched.
 - **KV** (`CACHE` binding) — shared SWR cache, keyed per built feed. A cron trigger (every 8 min) prewarms the hot lists so user requests are warm reads.
+- **D1** (`DB` binding) — `users`, `sessions`, `watched`, `lists`, `list_items`. Schema in `migrations/`.
 - **Assets** (`public/`) — static frontend, served by Workers Assets. The Worker runs first only for `/` to inject the initial feed.
-- **Secret** — `TMDB_API_KEY`, app-owned and server-side only.
+- **Secrets** — `TMDB_API_KEY` (server-side), `GOOGLE_ID`/`GOOGLE_SECRET`, `GITHUB_ID`/`GITHUB_SECRET`.
 
 ## Develop locally
 
 ```sh
 npm install
-cp .dev.vars.example .dev.vars   # then paste your TMDB v3 API key
-npm run dev                      # wrangler dev
+cp .dev.vars.example .dev.vars                  # paste your TMDB key (+ OAuth creds to test login)
+npx wrangler d1 migrations apply reelarr-db --local
+npm run dev                                      # wrangler dev
 ```
 
-Get a free TMDB key from <https://www.themoviedb.org/settings/api>. The dev server runs on the port wrangler prints (default <http://localhost:8787>).
+Get a free TMDB key from <https://www.themoviedb.org/settings/api>. The dev server runs on the port wrangler prints (default <http://localhost:8787>). Sign-in needs Google/GitHub OAuth apps with `http://localhost:8787/auth/google` and `/auth/github` registered as redirect URIs.
 
 ## Deploy
 
@@ -45,12 +48,14 @@ One-time setup:
 
 ```sh
 npx wrangler login
-npx wrangler kv namespace create CACHE      # paste the returned id into wrangler.jsonc
-npx wrangler secret put TMDB_API_KEY        # paste your TMDB key (it's never committed)
+npx wrangler kv namespace create CACHE            # paste the returned id into wrangler.jsonc
+npx wrangler d1 create reelarr-db                 # paste the returned database_id into wrangler.jsonc
+npx wrangler d1 migrations apply reelarr-db --remote
+npx wrangler secret put TMDB_API_KEY              # then GOOGLE_ID, GOOGLE_SECRET, GITHUB_ID, GITHUB_SECRET
 npm run deploy
 ```
 
-Workers Paid plan recommended (the cron trigger and request volume fit comfortably in its included usage).
+Register both providers' OAuth apps with `https://<deployed-host>/auth/google` and `/auth/github` as redirect URIs. Workers Paid plan recommended (the cron trigger and request volume fit comfortably in its included usage).
 
 ## Gestures
 

@@ -23,12 +23,25 @@
     { "binding": "CACHE", "id": "REPLACE_WITH_KV_ID" }
   ],
 
+  // Accounts: users, sessions, watched, lists. Migrations live in ./migrations.
+  // Create with:  npx wrangler d1 create reelarr-db
+  // then paste the returned database_id below, and apply migrations:
+  //   npx wrangler d1 migrations apply reelarr-db --local   (dev)
+  //   npx wrangler d1 migrations apply reelarr-db --remote   (prod)
+  "d1_databases": [
+    { "binding": "DB", "database_name": "reelarr-db", "database_id": "REPLACE_WITH_D1_ID" }
+  ],
+
   // Keep the hot lists warm for everyone. Every 8 minutes mirrors the old
   // setInterval prewarm cadence.
   "triggers": {
     "crons": ["*/8 * * * *"]
   }
 
-  // TMDB_API_KEY is a secret, not a var — set with:
-  //   npx wrangler secret put TMDB_API_KEY
+  // Secrets (set with `npx wrangler secret put <NAME>`, never committed):
+  //   TMDB_API_KEY   — TMDB v3 key, server-side only
+  //   GOOGLE_ID      — Google OAuth client id
+  //   GOOGLE_SECRET  — Google OAuth client secret
+  //   GITHUB_ID      — GitHub OAuth app client id
+  //   GITHUB_SECRET  — GitHub OAuth app client secret
 }

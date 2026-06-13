@@ -43,10 +43,11 @@ function skipProbability(tmdbId, mediaType) {
   return Math.min(0.8, 1 - Math.pow(0.7, count));
 }
 
-// ── Watched (localStorage) ────────────────────────────────────────────────────
-// Stateless until accounts land — the watched list lives in the browser, keyed
-// by `${tmdbId}:${mediaType}` → title. When OAuth + D1 arrive (see
-// docs/cloudflare-app-plan.md) this moves server-side and syncs across devices.
+// ── Watched ────────────────────────────────────────────────────────────────
+// Signed in → the watched list lives in D1 and syncs across devices. Signed
+// out → it lives in the browser (localStorage), and is merged into the account
+// on the next sign-in. Skip history (above) stays local for now — it's a
+// high-write stream that wants batching before it goes server-side.
 const WATCHED_KEY = 'reelarr_watched';
 function watchedKey(tmdbId, mediaType) { return `${tmdbId}:${mediaType || 'movie'}`; }
 
@@ -54,16 +55,88 @@ function loadWatchedStore() {
   try { return JSON.parse(localStorage.getItem(WATCHED_KEY) || '{}'); } catch { return {}; }
 }
 
-function loadWatched() {
+// Instant, synchronous — used for first paint before the auth check resolves.
+function loadWatchedLocal() {
   watchedSet = new Set(Object.keys(loadWatchedStore()));
+}
+
+async function loadWatchedServer() {
+  try {
+    const res = await fetch('/api/watched/ids');
+    if (!res.ok) return;
+    const rows = await res.json();
+    watchedSet = new Set(rows.map((r) => watchedKey(r.tmdb_id, r.media_type)));
+  } catch {}
 }
 
 function markWatched(item) {
   const key = watchedKey(item.id, item.media_type);
   watchedSet.add(key);
+  if (user) {
+    fetch('/api/watched', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tmdbId: item.id, mediaType: item.media_type || 'movie', title: item.title }),
+    }).catch(() => {});
+  } else {
+    const store = loadWatchedStore();
+    store[key] = item.title || 1;
+    try { localStorage.setItem(WATCHED_KEY, JSON.stringify(store)); } catch {}
+  }
+}
+
+// ── Account / auth ──────────────────────────────────────────────────────────
+async function loadMe() {
+  try {
+    const res = await fetch('/api/me');
+    user = res.ok ? (await res.json()).user : null;
+  } catch { user = null; }
+}
+
+// On first sign-in, push any locally-stored watched entries into the account,
+// then clear them so the server is the single source of truth.
+async function syncLocalToServer() {
   const store = loadWatchedStore();
-  store[key] = item.title || 1;
-  try { localStorage.setItem(WATCHED_KEY, JSON.stringify(store)); } catch {}
+  const items = Object.entries(store).map(([k, title]) => {
+    const [tmdbId, mediaType] = k.split(':');
+    return { tmdbId, mediaType, title: typeof title === 'string' ? title : null };
+  });
+  if (!items.length) return;
+  try {
+    const res = await fetch('/api/watched/merge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items }),
+    });
+    if (res.ok) localStorage.removeItem(WATCHED_KEY);
+  } catch {}
+}
+
+async function logout() {
+  try { await fetch('/api/logout', { method: 'POST' }); } catch {}
+  location.reload();
+}
+
+function renderAuthUI() {
+  const slot = document.getElementById('auth-slot');
+  if (!slot) return;
+  if (user) {
+    const initial = (user.name || user.email || '?').trim().charAt(0).toUpperCase();
+    slot.innerHTML = `
+      <div id="account">
+        ${user.avatar
+          ? `<img id="avatar" src="${escapeHtml(user.avatar)}" alt="" referrerpolicy="no-referrer" />`
+          : `<div id="avatar" class="avatar-fallback">${escapeHtml(initial)}</div>`}
+        <button id="logout-btn" title="Sign out">Sign out</button>
+      </div>`;
+    document.getElementById('logout-btn').addEventListener('click', logout);
+  } else {
+    slot.innerHTML = `<button id="login-btn">Sign in</button>`;
+    document.getElementById('login-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      document.getElementById('login-menu').classList.toggle('hidden');
+    });
+  }
 }
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -75,6 +148,7 @@ let loading = false;
 let feedAbortController = null;
 let swiper = null;
 let watchedSet = new Set();
+let user = null;
 let players = {};
 let playerReady = {};
 let ytApiReady = false;
@@ -787,7 +861,7 @@ function hydrateInitial(payload) {
 // ── Boot ──────────────────────────────────────────────────────────────────────
 (function boot() {
   renderTabs();
-  loadWatched();
+  loadWatchedLocal(); // instant, so first paint can filter without waiting on auth
 
   const initialFeed = window.__INITIAL_FEED__;
   if (initialFeed && Array.isArray(initialFeed.results) && initialFeed.results.length) {
@@ -796,4 +870,21 @@ function hydrateInitial(payload) {
     // No SSR data (TMDB cold, or SSR raced past its deadline) — client fetch.
     loadFeed(true);
   }
+
+  // Resolve auth in the background; upgrade the watched source if signed in.
+  loadMe().then(async () => {
+    renderAuthUI();
+    if (user) {
+      await syncLocalToServer();
+      await loadWatchedServer(); // future feed pages filter against the account
+    }
+  });
+
+  // Dismiss the login menu on any outside click.
+  document.addEventListener('click', (e) => {
+    const menu = document.getElementById('login-menu');
+    if (menu && !menu.classList.contains('hidden') && !e.target.closest('#login-menu, #login-btn')) {
+      menu.classList.add('hidden');
+    }
+  });
 })();

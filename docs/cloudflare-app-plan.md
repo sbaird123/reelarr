@@ -67,9 +67,14 @@ A Worker cannot reach `http://radarr:7878`. Three options considered:
 1. **Phase 0 (done, 13 Jun 2026):** strip the fork — Docker packaging and all
    Radarr/Sonarr/Jellyfin code removed; what remains is the TMDB feed/search core with
    SWR caching, SSR, watched list, and skip history, rebranded Reelarr.
-2. **Phase 1:** Workers + D1 + KV port, OAuth accounts, synced watched/skips/watchlists.
-   Mostly-mechanical port; the cache layer is the redesign, auth is the new subsystem.
-3. ~~Phase 2: connector agent~~ — dropped; *arr adds become list entries.
+2. **Phase 1a (done, 13 Jun 2026):** Workers + KV port. Hono app, KV-backed SWR cache
+   keyed per built feed, cron prewarm, Workers Assets, app-owned TMDB key. Stateless.
+3. **Phase 1b (done, 13 Jun 2026):** accounts. D1 schema (users/sessions/watched/lists/
+   list_items), OAuth via @hono/oauth-providers (Google + GitHub), opaque session tokens
+   in D1 + HttpOnly cookie, per-user watched with localStorage fallback + merge-on-login.
+   Deferred: skip history stays client-side until write-batching is designed; named-list
+   endpoints + UI are the next slice (tables already exist).
+4. ~~Phase 2: connector agent~~ — dropped; *arr adds become list entries.
 4. Existing Docker Peekarr stays maintained. Frontend + TMDB/feed logic are shareable —
    structure the port with a shared core in mind.
 

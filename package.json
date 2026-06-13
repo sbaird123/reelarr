@@ -11,6 +11,7 @@
   },
   "license": "MIT",
   "dependencies": {
+    "@hono/oauth-providers": "^0.8.5",
     "hono": "^4.12.25"
   },
   "devDependencies": {

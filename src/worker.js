@@ -1,4 +1,7 @@
 import { Hono } from 'hono';
+import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
+import { googleAuth } from '@hono/oauth-providers/google';
+import { githubAuth } from '@hono/oauth-providers/github';
 
 // ── TMDB ──────────────────────────────────────────────────────────────────────
 const TMDB = 'https://api.themoviedb.org/3';
@@ -239,6 +242,78 @@ async function prewarm(env) {
   console.log(`[prewarm] ${ok}/${ok + fail} lists warmed in ${Date.now() - start}ms`);
 }
 
+// ── Auth (D1 sessions) ────────────────────────────────────────────────────────
+const SESSION_COOKIE = 'reelarr_session';
+const SESSION_TTL_MS = 60 * 24 * 60 * 60 * 1000; // 60 days
+
+function newToken() {
+  const b = new Uint8Array(32);
+  crypto.getRandomValues(b);
+  return [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+}
+
+function cookieOpts(c, expires) {
+  // Secure only over https so cookies still set on http://localhost during dev.
+  const https = new URL(c.req.url).protocol === 'https:';
+  return { httpOnly: true, secure: https, sameSite: 'Lax', path: '/', expires };
+}
+
+async function upsertUser(env, { provider, providerId, email, name, avatar }) {
+  await env.DB.prepare(
+    `INSERT INTO users (provider, provider_id, email, name, avatar)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(provider, provider_id) DO UPDATE SET
+       email = excluded.email, name = excluded.name, avatar = excluded.avatar`
+  ).bind(provider, String(providerId), email || null, name || null, avatar || null).run();
+  const row = await env.DB.prepare(
+    `SELECT id FROM users WHERE provider = ? AND provider_id = ?`
+  ).bind(provider, String(providerId)).first();
+  return row.id;
+}
+
+async function createSession(env, userId) {
+  const id = newToken();
+  const expires = new Date(Date.now() + SESSION_TTL_MS);
+  await env.DB.prepare(
+    `INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)`
+  ).bind(id, userId, expires.toISOString()).run();
+  return { id, expires };
+}
+
+async function sessionUser(env, token) {
+  if (!token) return null;
+  return env.DB.prepare(
+    `SELECT u.id, u.provider, u.email, u.name, u.avatar
+     FROM sessions s JOIN users u ON u.id = s.user_id
+     WHERE s.id = ? AND s.expires_at > datetime('now')`
+  ).bind(token).first();
+}
+
+// Per-route middleware: resolve the session user into the context. Scoped to
+// auth-relevant routes only, so the high-traffic feed/search endpoints never
+// pay for a D1 session lookup.
+async function withUser(c, next) {
+  let user = null;
+  try { user = await sessionUser(c.env, getCookie(c, SESSION_COOKIE)); } catch {}
+  c.set('user', user);
+  await next();
+}
+
+function requireUser(c) {
+  const u = c.get('user');
+  return u || null;
+}
+
+// Finish an OAuth login: upsert the user, mint a session, set the cookie, and
+// bounce back to the app.
+async function completeLogin(c, profile) {
+  if (!profile) return c.redirect('/?login=failed');
+  const userId = await upsertUser(c.env, profile);
+  const { id, expires } = await createSession(c.env, userId);
+  setCookie(c, SESSION_COOKIE, id, cookieOpts(c, expires));
+  return c.redirect('/');
+}
+
 // ── App ─────────────────────────────────────────────────────────────────────
 const app = new Hono();
 
@@ -318,6 +393,94 @@ app.get('/api/shows/search', async (c) => {
   } catch (err) {
     return c.json({ error: err.message }, 500);
   }
+});
+
+// ── OAuth login ───────────────────────────────────────────────────────────────
+// The middleware's mount path doubles as the OAuth redirect URI — so Google and
+// GitHub must each have http://localhost:8787/auth/<provider> (dev) and
+// https://<deployed-host>/auth/<provider> (prod) registered as redirect URIs.
+// client id/secret are read from env (GOOGLE_ID/GOOGLE_SECRET, GITHUB_ID/GITHUB_SECRET).
+app.use('/auth/google', (c, next) =>
+  googleAuth({ scope: ['openid', 'email', 'profile'] })(c, next));
+app.get('/auth/google', (c) => {
+  const u = c.get('user-google');
+  return completeLogin(c, u && {
+    provider: 'google', providerId: u.id, email: u.email, name: u.name, avatar: u.picture,
+  });
+});
+
+app.use('/auth/github', (c, next) =>
+  githubAuth({ scope: ['read:user', 'user:email'] })(c, next));
+app.get('/auth/github', (c) => {
+  const u = c.get('user-github');
+  return completeLogin(c, u && {
+    provider: 'github', providerId: u.id, email: u.email, name: u.name || u.login, avatar: u.avatar_url,
+  });
+});
+
+// ── Account ───────────────────────────────────────────────────────────────────
+app.get('/api/me', withUser, (c) => {
+  const u = c.get('user');
+  return c.json({ user: u ? { name: u.name, email: u.email, avatar: u.avatar, provider: u.provider } : null });
+});
+
+app.post('/api/logout', async (c) => {
+  const token = getCookie(c, SESSION_COOKIE);
+  if (token) {
+    try { await c.env.DB.prepare(`DELETE FROM sessions WHERE id = ?`).bind(token).run(); } catch {}
+  }
+  deleteCookie(c, SESSION_COOKIE, { path: '/' });
+  return c.json({ ok: true });
+});
+
+// ── Watched (per-user, D1) ─────────────────────────────────────────────────────
+app.get('/api/watched/ids', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const { results } = await c.env.DB.prepare(
+    `SELECT tmdb_id, media_type FROM watched WHERE user_id = ?`
+  ).bind(u.id).all();
+  return c.json(results || []);
+});
+
+app.post('/api/watched', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const { tmdbId, mediaType = 'movie', title } = await c.req.json().catch(() => ({}));
+  const id = parseInt(tmdbId, 10);
+  if (!Number.isInteger(id)) return c.json({ error: 'tmdbId required' }, 400);
+  await c.env.DB.prepare(
+    `INSERT OR IGNORE INTO watched (user_id, tmdb_id, media_type, title) VALUES (?, ?, ?, ?)`
+  ).bind(u.id, id, mediaType, title || null).run();
+  return c.json({ ok: true });
+});
+
+app.delete('/api/watched/:tmdbId', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const id = parseInt(c.req.param('tmdbId'), 10);
+  if (!Number.isInteger(id)) return c.json({ error: 'invalid tmdbId' }, 400);
+  const mediaType = c.req.query('mediaType') || 'movie';
+  await c.env.DB.prepare(
+    `DELETE FROM watched WHERE user_id = ? AND tmdb_id = ? AND media_type = ?`
+  ).bind(u.id, id, mediaType).run();
+  return c.json({ ok: true });
+});
+
+// Bulk-merge localStorage watched into the account on first sign-in.
+app.post('/api/watched/merge', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const body = await c.req.json().catch(() => ({}));
+  const items = Array.isArray(body.items) ? body.items : [];
+  const stmt = c.env.DB.prepare(
+    `INSERT OR IGNORE INTO watched (user_id, tmdb_id, media_type, title) VALUES (?, ?, ?, ?)`
+  );
+  const batch = items
+    .filter((it) => Number.isInteger(parseInt(it.tmdbId, 10)))
+    .map((it) => stmt.bind(u.id, parseInt(it.tmdbId, 10), it.mediaType || 'movie', it.title || null));
+  if (batch.length) await c.env.DB.batch(batch);
+  return c.json({ ok: true, merged: batch.length });
 });
 
 app.get('/api/health', (c) => c.json({ tmdb: !!c.env.TMDB_API_KEY }));
