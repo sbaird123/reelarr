@@ -347,6 +347,7 @@ async function openListDetail(list) {
     body.appendChild(buildKindControl(list, data.kind));
     body.appendChild(buildWatchedToggle(list, data.hide_watched));
     body.appendChild(buildSharePanel(list, data.share, data.kind));
+    body.appendChild(buildTraktPanel(list, data.trakt));
     body.appendChild(buildCollabPanel(list));
   } else {
     const banner = document.createElement('div');
@@ -573,6 +574,126 @@ async function enableShare(listId) {
 async function disableShare(listId) {
   try { await fetch(`/api/lists/${listId}/share`, { method: 'DELETE' }); }
   catch {}
+}
+
+// ── Trakt sync panel (owner-only) ─────────────────────────────────────────────
+// Two-way sync a list with a Trakt list or the Trakt watchlist. The panel stays
+// hidden until Trakt is configured server-side (TRAKT_ID secret set).
+function buildTraktPanel(list, trakt) {
+  const panel = document.createElement('div');
+  panel.className = 'share-panel trakt-panel';
+  panel.innerHTML = `<div class="share-head">Trakt sync</div><div class="trakt-body">Loading…</div>`;
+  renderTrakt(list, trakt, panel);
+  return panel;
+}
+
+async function renderTrakt(list, trakt, panel) {
+  const box = panel.querySelector('.trakt-body');
+  let status;
+  try { status = await (await fetch('/api/trakt')).json(); } catch { status = null; }
+
+  // Hide the whole panel until Trakt is wired up server-side.
+  if (!status || !status.configured) { panel.classList.add('hidden'); return; }
+
+  if (!status.connected) {
+    box.innerHTML = `
+      <p class="share-help">Two-way sync this list with a Trakt list or your Trakt watchlist — so Plex, Kometa, SIMKL and others can read it too. Syncs automatically in the background.</p>
+      <button class="trakt-connect">Connect Trakt account</button>`;
+    box.querySelector('.trakt-connect').addEventListener('click', () => { location.href = '/api/trakt/connect'; });
+    return;
+  }
+
+  if (trakt) {
+    const target = trakt.target === 'watchlist'
+      ? 'your Trakt watchlist'
+      : `a Trakt list${trakt.slug ? ` (“${escapeHtml(trakt.slug)}”)` : ''}`;
+    const last = trakt.last_synced_at ? `Last synced ${timeAgo(trakt.last_synced_at)}` : 'Not synced yet';
+    box.innerHTML = `
+      <p class="share-help">Syncing with ${target} as <strong>${escapeHtml(status.username || 'your account')}</strong>. Auto-syncs every few minutes.</p>
+      <div class="trakt-meta">${escapeHtml(last)}</div>
+      <div class="trakt-actions">
+        <button class="trakt-sync">Sync now</button>
+        <button class="trakt-unlink">Unlink</button>
+      </div>`;
+    box.querySelector('.trakt-sync').addEventListener('click', async () => {
+      const btn = box.querySelector('.trakt-sync'); btn.disabled = true; btn.textContent = 'Syncing…';
+      const ok = await syncTrakt(list.id);
+      toast(ok ? 'Synced with Trakt' : 'Trakt sync failed');
+      myLists = null;
+      openListDetail(list);
+    });
+    box.querySelector('.trakt-unlink').addEventListener('click', async () => {
+      if (!confirm('Stop syncing this list with Trakt? Both lists are kept — they just stop syncing.')) return;
+      await unlinkTrakt(list.id);
+      openListDetail(list);
+    });
+    return;
+  }
+
+  // Connected, but this list isn't linked yet — pick a target.
+  box.innerHTML = `
+    <p class="share-help">Link this list to Trakt as <strong>${escapeHtml(status.username || 'your account')}</strong>. Changes sync both ways automatically.</p>
+    <select class="trakt-target">
+      <option value="new">Create a new Trakt list</option>
+      <option value="watchlist">My Trakt watchlist</option>
+    </select>
+    <div class="trakt-actions">
+      <button class="trakt-link">Link &amp; sync</button>
+      <button class="trakt-disconnect">Disconnect Trakt</button>
+    </div>`;
+
+  const sel = box.querySelector('.trakt-target');
+  // Offer the user's existing Trakt lists as link targets too.
+  let existing = [];
+  try { existing = await (await fetch('/api/trakt/lists')).json(); } catch {}
+  if (Array.isArray(existing) && existing.length) {
+    const og = document.createElement('optgroup');
+    og.label = 'Existing Trakt lists';
+    existing.forEach((l) => {
+      const o = document.createElement('option');
+      o.value = `existing:${l.id}`;
+      o.dataset.slug = l.slug || '';
+      o.textContent = `${l.name} (${l.count})`;
+      og.appendChild(o);
+    });
+    sel.appendChild(og);
+  }
+
+  box.querySelector('.trakt-link').addEventListener('click', async () => {
+    const v = sel.value;
+    let payload;
+    if (v === 'new') payload = { target: 'new' };
+    else if (v === 'watchlist') payload = { target: 'watchlist' };
+    else if (v.startsWith('existing:')) {
+      const opt = sel.options[sel.selectedIndex];
+      payload = { trakt_list_id: v.slice('existing:'.length), trakt_slug: opt.dataset.slug || null };
+    }
+    const btn = box.querySelector('.trakt-link'); btn.disabled = true; btn.textContent = 'Linking…';
+    const ok = await linkTrakt(list.id, payload);
+    toast(ok ? 'Linked & synced with Trakt' : 'Could not link to Trakt');
+    myLists = null;
+    openListDetail(list);
+  });
+  box.querySelector('.trakt-disconnect').addEventListener('click', async () => {
+    if (!confirm('Disconnect your Trakt account? This unlinks all your lists from Trakt.')) return;
+    await disconnectTrakt();
+    openListDetail(list);
+  });
+}
+
+async function linkTrakt(listId, payload) {
+  try { const r = await fetch(`/api/lists/${listId}/trakt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); return r.ok; }
+  catch { return false; }
+}
+async function syncTrakt(listId) {
+  try { const r = await fetch(`/api/lists/${listId}/trakt/sync`, { method: 'POST' }); return r.ok; }
+  catch { return false; }
+}
+async function unlinkTrakt(listId) {
+  try { await fetch(`/api/lists/${listId}/trakt`, { method: 'DELETE' }); } catch {}
+}
+async function disconnectTrakt() {
+  try { await fetch('/api/trakt', { method: 'DELETE' }); } catch {}
 }
 
 async function createList(name, kind) {
@@ -974,6 +1095,17 @@ function toast(msg, duration = 2800) {
 
 function setLoading(on) {
   document.getElementById('loading-overlay').classList.toggle('hidden', !on);
+}
+
+// SQLite's datetime('now') is UTC with no offset — parse as UTC, render relative.
+function timeAgo(sqlTs) {
+  const t = Date.parse(String(sqlTs).replace(' ', 'T') + 'Z');
+  if (isNaN(t)) return sqlTs;
+  const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (s < 60) return 'just now';
+  const m = Math.floor(s / 60); if (m < 60) return `${m} min ago`;
+  const h = Math.floor(m / 60); if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
 }
 
 // Signed-out users can still tap slide actions like "+ List" / "Recommend".
@@ -1692,6 +1824,16 @@ function hydrateInitial(payload) {
 (function boot() {
   renderTabs();
   loadWatchedLocal(); // instant, so first paint can filter without waiting on auth
+
+  // Surface the Trakt OAuth result (set by the /auth/trakt redirect), then strip
+  // the param so a refresh doesn't re-toast.
+  const tp = new URLSearchParams(location.search).get('trakt');
+  if (tp) {
+    toast(tp === 'connected' ? 'Trakt connected'
+      : tp === 'signin' ? 'Sign in first, then connect Trakt'
+      : 'Trakt connection failed');
+    history.replaceState(null, '', location.pathname);
+  }
 
   const initialFeed = window.__INITIAL_FEED__;
   if (initialFeed && Array.isArray(initialFeed.results) && initialFeed.results.length) {

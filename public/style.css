@@ -587,6 +587,42 @@ html, body {
   cursor: pointer;
 }
 
+/* ── Trakt sync panel ───────────────────────────────────────────────────── */
+.trakt-target {
+  width: 100%;
+  margin: 8px 0;
+  background: rgba(20,20,24,.85);
+  color: #f0f0f0;
+  border: 1px solid rgba(255,255,255,.22);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: .9rem;
+}
+.trakt-target option, .trakt-target optgroup { background: #161616; color: #f0f0f0; }
+.trakt-meta { font-size: .8rem; color: var(--muted); margin: 4px 0 2px; }
+.trakt-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.trakt-connect, .trakt-sync, .trakt-link {
+  background: var(--accent);
+  border: none;
+  color: #fff;
+  border-radius: 8px;
+  padding: 9px 16px;
+  font-size: .85rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.trakt-connect:disabled, .trakt-sync:disabled, .trakt-link:disabled { opacity: .6; cursor: default; }
+.trakt-unlink, .trakt-disconnect {
+  background: rgba(255,255,255,.1);
+  border: 1px solid rgba(255,255,255,.18);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 9px 14px;
+  font-size: .85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
 #login-btn {
   background: var(--accent);
   border: none;

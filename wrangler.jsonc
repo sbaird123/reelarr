@@ -5,6 +5,10 @@
   "compatibility_date": "2026-06-01",
   "observability": { "enabled": true },
 
+  // Canonical public origin. Used to build a stable Trakt OAuth redirect URI for
+  // background token refresh (cron has no request context to derive it from).
+  "vars": { "APP_ORIGIN": "https://reelarr.app" },
+
   // Static frontend in ./public. The Worker runs first only for "/" (so it can
   // SSR an initial feed into index.html); every other path is served
   // asset-first, falling through to the Worker for unmatched routes (the /api/*
@@ -51,4 +55,6 @@
   //   TMDB_API_KEY   — TMDB v3 key, server-side only
   //   GOOGLE_ID      — Google OAuth client id
   //   GOOGLE_SECRET  — Google OAuth client secret
+  //   TRAKT_ID       — Trakt OAuth client id     (trakt.tv/oauth/applications)
+  //   TRAKT_SECRET   — Trakt OAuth client secret
 }

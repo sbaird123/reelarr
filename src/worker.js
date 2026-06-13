@@ -669,6 +669,14 @@ app.get('/api/lists/:id', withUser, async (c) => {
     `SELECT tmdb_id, media_type, title, added_at FROM list_items
      WHERE list_id = ? ORDER BY added_at DESC`
   ).bind(list.id).all();
+  // Trakt link state (owner-only, like *arr sharing).
+  let trakt = null;
+  if (list.role === 'owner') {
+    const link = await c.env.DB.prepare(
+      `SELECT trakt_list_id, trakt_slug, last_synced_at FROM trakt_list_links WHERE list_id = ?`
+    ).bind(list.id).first();
+    if (link) trakt = { target: link.trakt_list_id ? 'list' : 'watchlist', slug: link.trakt_slug, last_synced_at: link.last_synced_at };
+  }
   return c.json({
     id: list.id,
     name: list.name,
@@ -678,6 +686,7 @@ app.get('/api/lists/:id', withUser, async (c) => {
     items: results || [],
     // *arr import URLs are owner-only — collaborators don't manage sharing.
     share: list.role === 'owner' && list.share_token ? shareInfo(c, list.share_token) : null,
+    trakt,
   });
 });
 
@@ -1147,11 +1156,337 @@ app.delete('/api/recommendations/:id', withUser, async (c) => {
   return c.json({ ok: true });
 });
 
+// ── Trakt (OAuth + two-way list sync) ────────────────────────────────────────
+// Reelarr links a list to a Trakt list (or the watchlist) and keeps them in
+// sync both ways. Trakt matches on tmdb ids, which is exactly what Reelarr
+// stores, so no external-id mapping is needed (unlike the Radarr/Sonarr exports).
+const TRAKT_API = 'https://api.trakt.tv';
+const TRAKT_AUTHORIZE = 'https://trakt.tv/oauth/authorize';
+
+// The redirect URI must match what's registered on the Trakt app exactly, and
+// must be stable for background token refresh (which has no request context).
+function traktRedirectUri(env) {
+  return `${env.APP_ORIGIN || 'https://reelarr.app'}/auth/trakt`;
+}
+
+function traktHeaders(env, accessToken) {
+  const h = { 'Content-Type': 'application/json', 'trakt-api-version': '2', 'trakt-api-key': env.TRAKT_ID };
+  if (accessToken) h['Authorization'] = `Bearer ${accessToken}`;
+  return h;
+}
+
+// Exchange an auth code or refresh token for a fresh token set.
+async function traktTokenExchange(env, params) {
+  const res = await fetch(`${TRAKT_API}/oauth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...params,
+      client_id: env.TRAKT_ID,
+      client_secret: env.TRAKT_SECRET,
+      redirect_uri: traktRedirectUri(env),
+    }),
+  });
+  if (!res.ok) throw new Error(`trakt token ${res.status}`);
+  return res.json(); // { access_token, refresh_token, expires_in, created_at, ... }
+}
+
+async function storeTraktTokens(env, userId, tok) {
+  const base = tok.created_at ? tok.created_at * 1000 : Date.now();
+  const expiresAt = new Date(base + (tok.expires_in || 7776000) * 1000).toISOString();
+  await env.DB.prepare(
+    `INSERT INTO trakt_accounts (user_id, access_token, refresh_token, expires_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(user_id) DO UPDATE SET
+       access_token = excluded.access_token,
+       refresh_token = excluded.refresh_token,
+       expires_at = excluded.expires_at`
+  ).bind(userId, tok.access_token, tok.refresh_token, expiresAt).run();
+}
+
+// A valid access token for the user, refreshing if it expires within 5 min.
+// null if the user hasn't connected Trakt.
+async function traktAccessToken(env, userId) {
+  const row = await env.DB.prepare(
+    `SELECT access_token, refresh_token, expires_at FROM trakt_accounts WHERE user_id = ?`
+  ).bind(userId).first();
+  if (!row) return null;
+  if (new Date(row.expires_at).getTime() - Date.now() > 5 * 60_000) return row.access_token;
+  try {
+    const tok = await traktTokenExchange(env, { grant_type: 'refresh_token', refresh_token: row.refresh_token });
+    await storeTraktTokens(env, userId, tok);
+    return tok.access_token;
+  } catch {
+    return row.access_token; // best-effort; the stale token may still work briefly
+  }
+}
+
+async function traktApi(env, token, method, path, body) {
+  const res = await fetch(`${TRAKT_API}${path}`, {
+    method,
+    headers: traktHeaders(env, token),
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) throw new Error(`trakt ${method} ${path} → ${res.status}`);
+  return res.status === 204 ? null : res.json();
+}
+
+const traktKey = (i) => `${i.tmdb_id}:${i.media_type}`;
+
+function traktItemBody(items) {
+  return {
+    movies: items.filter((i) => i.media_type === 'movie').map((i) => ({ ids: { tmdb: i.tmdb_id } })),
+    shows:  items.filter((i) => i.media_type === 'tv').map((i) => ({ ids: { tmdb: i.tmdb_id } })),
+  };
+}
+
+// Read a Trakt target's items as {tmdb_id, media_type, title}. traktListId null
+// → the watchlist. Entries without a tmdb id are skipped (Reelarr is tmdb-keyed).
+async function traktReadItems(env, token, traktListId) {
+  const out = [];
+  for (const t of ['movies', 'shows']) {
+    const path = traktListId
+      ? `/users/me/lists/${traktListId}/items/${t}`
+      : `/sync/watchlist/${t}`;
+    let data;
+    try { data = await traktApi(env, token, 'GET', path); } catch { data = []; }
+    for (const entry of data || []) {
+      const obj = entry.movie || entry.show;
+      const tmdb = obj && obj.ids && obj.ids.tmdb;
+      if (tmdb) out.push({ tmdb_id: tmdb, media_type: t === 'movies' ? 'movie' : 'tv', title: obj.title });
+    }
+  }
+  return out;
+}
+
+function traktWritePath(traktListId, remove) {
+  if (traktListId) return `/users/me/lists/${traktListId}/items${remove ? '/remove' : ''}`;
+  return `/sync/watchlist${remove ? '/remove' : ''}`;
+}
+
+// Two-way reconcile one linked list. Snapshot diff: an item "added" iff not in
+// the snapshot, "removed" iff in the snapshot but now absent — mutually
+// exclusive, so additions and removals never conflict on the same item.
+async function syncTraktLink(env, link) {
+  const token = await traktAccessToken(env, link.user_id);
+  if (!token) return { ok: false, reason: 'not connected' };
+
+  const listRow = await env.DB.prepare(`SELECT kind FROM lists WHERE id = ?`).bind(link.list_id).first();
+  const kind = listRow ? listRow.kind : 'both';
+  const typeOk = (mt) => kind === 'both' || (kind === 'movie' && mt === 'movie') || (kind === 'tv' && mt === 'tv');
+
+  const rRows = (await env.DB.prepare(
+    `SELECT tmdb_id, media_type, title FROM list_items WHERE list_id = ?`
+  ).bind(link.list_id).all()).results || [];
+  const R = new Map(rRows.filter((r) => typeOk(r.media_type)).map((r) => [traktKey(r), r]));
+
+  const T = new Map(
+    (await traktReadItems(env, token, link.trakt_list_id))
+      .filter((i) => typeOk(i.media_type))
+      .map((i) => [traktKey(i), i])
+  );
+
+  let S;
+  try { S = new Set(JSON.parse(link.snapshot || '[]')); } catch { S = new Set(); }
+
+  const removed = new Set([...S].filter((k) => !R.has(k) || !T.has(k)));
+  const finalKeys = new Set([...R.keys(), ...T.keys()].filter((k) => !removed.has(k)));
+  const itemFor = (k) => R.get(k) || T.get(k);
+
+  const toAddTrakt    = [...finalKeys].filter((k) => !T.has(k)).map(itemFor);
+  const toRemoveTrakt = [...T.keys()].filter((k) => !finalKeys.has(k)).map((k) => T.get(k));
+  const toAddReelarr    = [...finalKeys].filter((k) => !R.has(k)).map(itemFor);
+  const toRemoveReelarr = [...R.keys()].filter((k) => !finalKeys.has(k)).map((k) => R.get(k));
+
+  if (toAddTrakt.length)    await traktApi(env, token, 'POST', traktWritePath(link.trakt_list_id, false), traktItemBody(toAddTrakt));
+  if (toRemoveTrakt.length) await traktApi(env, token, 'POST', traktWritePath(link.trakt_list_id, true), traktItemBody(toRemoveTrakt));
+
+  if (toAddReelarr.length) {
+    const stmt = env.DB.prepare(`INSERT OR IGNORE INTO list_items (list_id, tmdb_id, media_type, title) VALUES (?, ?, ?, ?)`);
+    await env.DB.batch(toAddReelarr.map((i) => stmt.bind(link.list_id, i.tmdb_id, i.media_type, i.title || null)));
+  }
+  if (toRemoveReelarr.length) {
+    const stmt = env.DB.prepare(`DELETE FROM list_items WHERE list_id = ? AND tmdb_id = ? AND media_type = ?`);
+    await env.DB.batch(toRemoveReelarr.map((i) => stmt.bind(link.list_id, i.tmdb_id, i.media_type)));
+  }
+
+  await env.DB.prepare(
+    `UPDATE trakt_list_links SET snapshot = ?, last_synced_at = datetime('now') WHERE list_id = ?`
+  ).bind(JSON.stringify([...finalKeys]), link.list_id).run();
+
+  return {
+    ok: true,
+    addedTrakt: toAddTrakt.length, removedTrakt: toRemoveTrakt.length,
+    addedReelarr: toAddReelarr.length, removedReelarr: toRemoveReelarr.length,
+  };
+}
+
+// Cron entry: sync links not touched in the last ~10 min. Capped per run; with
+// the Trakt POST limit of 1/sec this is plenty at current scale.
+async function traktSyncAll(env) {
+  if (!env.TRAKT_ID) return;
+  const { results } = await env.DB.prepare(
+    `SELECT list_id, user_id, trakt_list_id, snapshot FROM trakt_list_links
+     WHERE last_synced_at IS NULL OR last_synced_at <= datetime('now', '-10 minutes')
+     LIMIT 50`
+  ).all();
+  for (const link of results || []) {
+    try { await syncTraktLink(env, link); }
+    catch (e) { console.warn(`[trakt] sync list ${link.list_id} failed: ${e.message}`); }
+  }
+}
+
+// Start the OAuth flow — redirect the signed-in user to Trakt's consent screen.
+app.get('/api/trakt/connect', withUser, (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  if (!c.env.TRAKT_ID) return c.json({ error: 'Trakt not configured' }, 503);
+  const state = newToken().slice(0, 24);
+  const https = new URL(c.req.url).protocol === 'https:';
+  setCookie(c, 'trakt_state', state, { httpOnly: true, secure: https, sameSite: 'Lax', path: '/', maxAge: 600 });
+  const url = new URL(TRAKT_AUTHORIZE);
+  url.searchParams.set('response_type', 'code');
+  url.searchParams.set('client_id', c.env.TRAKT_ID);
+  url.searchParams.set('redirect_uri', traktRedirectUri(c.env));
+  url.searchParams.set('state', state);
+  return c.redirect(url.toString());
+});
+
+// OAuth callback — verify state, exchange the code, store tokens.
+app.get('/auth/trakt', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.redirect('/?trakt=signin');
+  const code = c.req.query('code');
+  const state = c.req.query('state');
+  const expected = getCookie(c, 'trakt_state');
+  deleteCookie(c, 'trakt_state', { path: '/' });
+  if (!code || !state || state !== expected) return c.redirect('/?trakt=failed');
+  try {
+    const tok = await traktTokenExchange(c.env, { grant_type: 'authorization_code', code });
+    await storeTraktTokens(c.env, u.id, tok);
+    try {
+      const me = await traktApi(c.env, tok.access_token, 'GET', '/users/me');
+      if (me && me.username) await c.env.DB.prepare(`UPDATE trakt_accounts SET username = ? WHERE user_id = ?`).bind(me.username, u.id).run();
+    } catch {}
+    return c.redirect('/?trakt=connected');
+  } catch {
+    return c.redirect('/?trakt=failed');
+  }
+});
+
+// Connection status (drives the UI).
+app.get('/api/trakt', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const row = await c.env.DB.prepare(`SELECT username FROM trakt_accounts WHERE user_id = ?`).bind(u.id).first();
+  return c.json({ configured: !!c.env.TRAKT_ID, connected: !!row, username: row ? row.username : null });
+});
+
+// Disconnect — revoke the token and drop the account + its links.
+app.delete('/api/trakt', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const row = await c.env.DB.prepare(`SELECT access_token FROM trakt_accounts WHERE user_id = ?`).bind(u.id).first();
+  if (row) {
+    try {
+      await fetch(`${TRAKT_API}/oauth/revoke`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: row.access_token, client_id: c.env.TRAKT_ID, client_secret: c.env.TRAKT_SECRET }),
+      });
+    } catch {}
+  }
+  await c.env.DB.prepare(`DELETE FROM trakt_accounts WHERE user_id = ?`).bind(u.id).run();
+  await c.env.DB.prepare(`DELETE FROM trakt_list_links WHERE user_id = ?`).bind(u.id).run();
+  return c.json({ ok: true });
+});
+
+// The user's existing Trakt lists, for the "link to an existing list" picker.
+app.get('/api/trakt/lists', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const token = await traktAccessToken(c.env, u.id);
+  if (!token) return c.json({ error: 'not connected' }, 400);
+  let lists = [];
+  try { lists = await traktApi(c.env, token, 'GET', '/users/me/lists') || []; } catch {}
+  return c.json(lists.map((l) => ({ id: String(l.ids.trakt), slug: l.ids.slug, name: l.name, count: l.item_count })));
+});
+
+// Link a Reelarr list to a Trakt target and run an initial sync. Body:
+// { target: 'watchlist' | 'new' } or { trakt_list_id, trakt_slug }.
+app.post('/api/lists/:id/trakt', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const list = await ownedList(c.env, u.id, parseInt(c.req.param('id'), 10));
+  if (!list) return c.json({ error: 'not found' }, 404);
+  const token = await traktAccessToken(c.env, u.id);
+  if (!token) return c.json({ error: 'connect Trakt first' }, 400);
+  const body = await c.req.json().catch(() => ({}));
+
+  let traktListId = null, traktSlug = null;
+  if (body.target === 'watchlist') {
+    traktListId = null;
+  } else if (body.target === 'new') {
+    try {
+      const created = await traktApi(c.env, token, 'POST', '/users/me/lists', {
+        name: list.name, description: 'Synced from Reelarr', privacy: 'private',
+      });
+      traktListId = String(created.ids.trakt);
+      traktSlug = created.ids.slug;
+    } catch { return c.json({ error: 'could not create Trakt list' }, 502); }
+  } else if (body.trakt_list_id) {
+    traktListId = String(body.trakt_list_id);
+    traktSlug = body.trakt_slug || null;
+  } else {
+    return c.json({ error: 'target required' }, 400);
+  }
+
+  await c.env.DB.prepare(
+    `INSERT INTO trakt_list_links (list_id, user_id, trakt_list_id, trakt_slug, snapshot)
+     VALUES (?, ?, ?, ?, '[]')
+     ON CONFLICT(list_id) DO UPDATE SET
+       trakt_list_id = excluded.trakt_list_id, trakt_slug = excluded.trakt_slug, snapshot = '[]'`
+  ).bind(list.id, u.id, traktListId, traktSlug).run();
+
+  const link = await c.env.DB.prepare(
+    `SELECT list_id, user_id, trakt_list_id, snapshot FROM trakt_list_links WHERE list_id = ?`
+  ).bind(list.id).first();
+  let sync = null;
+  try { sync = await syncTraktLink(c.env, link); } catch { sync = { ok: false }; }
+  return c.json({ ok: true, sync });
+});
+
+// Manual "sync now".
+app.post('/api/lists/:id/trakt/sync', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const list = await ownedList(c.env, u.id, parseInt(c.req.param('id'), 10));
+  if (!list) return c.json({ error: 'not found' }, 404);
+  const link = await c.env.DB.prepare(
+    `SELECT list_id, user_id, trakt_list_id, snapshot FROM trakt_list_links WHERE list_id = ? AND user_id = ?`
+  ).bind(list.id, u.id).first();
+  if (!link) return c.json({ error: 'not linked' }, 400);
+  try { return c.json({ ok: true, sync: await syncTraktLink(c.env, link) }); }
+  catch { return c.json({ error: 'sync failed' }, 502); }
+});
+
+// Unlink (leaves both the Reelarr list and the Trakt list intact, just stops syncing).
+app.delete('/api/lists/:id/trakt', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const id = parseInt(c.req.param('id'), 10);
+  const list = await ownedList(c.env, u.id, id);
+  if (!list) return c.json({ error: 'not found' }, 404);
+  await c.env.DB.prepare(`DELETE FROM trakt_list_links WHERE list_id = ? AND user_id = ?`).bind(id, u.id).run();
+  return c.json({ ok: true });
+});
+
 app.get('/api/health', (c) => c.json({ tmdb: !!c.env.TMDB_API_KEY }));
 
 export default {
   fetch: app.fetch,
   async scheduled(event, env, ctx) {
     ctx.waitUntil(prewarm(env));
+    ctx.waitUntil(traktSyncAll(env));
   },
 };
