@@ -15,3 +15,6 @@ node_modules/
 # Logs
 *.log
 npm-debug.log*
+
+# Local-only notes / work-in-progress docs (not for the repo)
+WORKLOG.md
