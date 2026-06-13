@@ -248,6 +248,35 @@ async function prewarm(env) {
 // (reelarr.app) is onboarded for sending; the EMAIL binding is set in wrangler.
 const MAIL_FROM = { email: 'notifications@reelarr.app', name: 'Reelarr' };
 
+// Branded HTML for the "join Reelarr" invite sent when you friend an email that
+// has no account yet.
+function inviteEmailHtml(fromName, origin) {
+  return `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#1a1a1a">
+  <div style="font-size:28px;font-weight:800;color:#e50914;margin-bottom:16px">Reelarr</div>
+  <p style="font-size:16px;line-height:1.5;margin:0 0 12px"><strong>${esc(fromName)}</strong> wants to share movie &amp; TV watchlists with you on <strong>Reelarr</strong> — a fun, TikTok-style way to discover trailers.</p>
+  <p style="font-size:15px;line-height:1.5;color:#444;margin:0 0 24px">Sign up free with Google and ${esc(fromName)}'s friend request will be waiting for you.</p>
+  <p style="margin:0 0 24px"><a href="${origin}" style="background:#e50914;color:#fff;text-decoration:none;padding:12px 24px;border-radius:8px;font-weight:700;display:inline-block">Join Reelarr</a></p>
+  <p style="font-size:12px;color:#999;margin:0">If you weren't expecting this, you can safely ignore this email.</p>
+</div>`;
+}
+
+// On signup/login, turn any pending email invites into incoming friend requests
+// for the new user (they still confirm). Best-effort — never blocks login.
+async function convertInvites(env, userId, email) {
+  const { results } = await env.DB.prepare(
+    `SELECT inviter_id FROM friend_invites WHERE email = ? COLLATE NOCASE`
+  ).bind(email).all();
+  const inviters = (results || []).map((r) => r.inviter_id).filter((id) => id !== userId);
+  if (inviters.length) {
+    const stmt = env.DB.prepare(
+      `INSERT INTO friendships (requester_id, addressee_id, status) VALUES (?, ?, 'pending')
+       ON CONFLICT(requester_id, addressee_id) DO NOTHING`
+    );
+    await env.DB.batch(inviters.map((id) => stmt.bind(id, userId)));
+  }
+  await env.DB.prepare(`DELETE FROM friend_invites WHERE email = ? COLLATE NOCASE`).bind(email).run();
+}
+
 async function sendEmail(env, { to, subject, html, text }) {
   if (!env.EMAIL || !to) return false; // binding absent or no address → skip
   try {
@@ -326,6 +355,10 @@ function requireUser(c) {
 async function completeLogin(c, profile) {
   if (!profile) return c.redirect('/?login=failed');
   const userId = await upsertUser(c.env, profile);
+  // Pending email invites → incoming friend requests for this account.
+  if (profile.email) {
+    try { await convertInvites(c.env, userId, profile.email); } catch {}
+  }
   const { id, expires } = await createSession(c.env, userId);
   setCookie(c, SESSION_COOKIE, id, cookieOpts(c, expires));
   return c.redirect('/');
@@ -867,10 +900,15 @@ app.get('/api/friends', withUser, async (c) => {
      FROM friendships f JOIN users u ON u.id = f.addressee_id
      WHERE f.requester_id = ?1 AND f.status = 'pending' ORDER BY f.created_at DESC`
   ).bind(u.id).all();
+  // Email invites to people who haven't signed up yet.
+  const invited = await c.env.DB.prepare(
+    `SELECT email FROM friend_invites WHERE inviter_id = ? ORDER BY created_at DESC`
+  ).bind(u.id).all();
   return c.json({
     friends: friends.results || [],
     incoming: incoming.results || [],
     outgoing: outgoing.results || [],
+    invited: invited.results || [],
   });
 });
 
@@ -885,7 +923,26 @@ app.post('/api/friends', withUser, async (c) => {
   const target = await c.env.DB.prepare(
     `SELECT id, name, email FROM users WHERE email = ? COLLATE NOCASE LIMIT 1`
   ).bind(addr).first();
-  if (!target) return c.json({ error: 'No Reelarr account uses that email' }, 404);
+
+  // No account yet → record a pending invite and email them to join. It becomes
+  // an incoming friend request automatically when they sign up (convertInvites).
+  if (!target) {
+    if (u.email && addr.toLowerCase() === u.email.toLowerCase())
+      return c.json({ error: "That's your own email" }, 400);
+    await c.env.DB.prepare(
+      `INSERT OR IGNORE INTO friend_invites (email, inviter_id) VALUES (?, ?)`
+    ).bind(addr, u.id).run();
+    const origin = new URL(c.req.url).origin;
+    const fromName = u.name || 'A friend';
+    c.executionCtx.waitUntil(sendEmail(c.env, {
+      to: addr,
+      subject: `${fromName} invited you to Reelarr`,
+      text: `${fromName} wants to share movie & TV watchlists with you on Reelarr — a TikTok-style way to discover trailers.\n\nSign up free with Google at ${origin} and ${fromName}'s friend request will be waiting.`,
+      html: inviteEmailHtml(fromName, origin),
+    }));
+    return c.json({ status: 'invited' });
+  }
+
   if (target.id === u.id) return c.json({ error: "That's your own email" }, 400);
 
   const existing = await c.env.DB.prepare(
@@ -918,6 +975,19 @@ app.post('/api/friends', withUser, async (c) => {
            <p><a href="${origin}">Open Reelarr</a> and go to Friends to accept.</p>`,
   }));
   return c.json({ status: 'requested' });
+});
+
+// Cancel a pending email invite (registered before /:userId so "invite" isn't
+// matched as a user id).
+app.delete('/api/friends/invite', withUser, async (c) => {
+  const u = requireUser(c);
+  if (!u) return c.json({ error: 'not signed in' }, 401);
+  const email = (c.req.query('email') || '').trim();
+  if (!email) return c.json({ error: 'email required' }, 400);
+  await c.env.DB.prepare(
+    `DELETE FROM friend_invites WHERE inviter_id = ? AND email = ? COLLATE NOCASE`
+  ).bind(u.id, email).run();
+  return c.json({ ok: true });
 });
 
 // Accept an incoming request from :userId.

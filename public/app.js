@@ -581,10 +581,33 @@ async function renderFriendsView() {
     data.friends.forEach((f) => body.appendChild(friendRow(f, 'friend')));
   }
 
-  if (data.outgoing.length) {
+  const invited = data.invited || [];
+  if (data.outgoing.length || invited.length) {
     body.appendChild(friendSection('Pending'));
     data.outgoing.forEach((f) => body.appendChild(friendRow(f, 'outgoing')));
+    invited.forEach((inv) => body.appendChild(inviteRow(inv)));
   }
+}
+
+// A pending email invite to someone who hasn't signed up yet.
+function inviteRow(inv) {
+  const row = document.createElement('div');
+  row.className = 'friend-row';
+  row.innerHTML = `<div class="friend-avatar friend-avatar-fallback">@</div>
+    <div class="friend-meta">
+      <span class="friend-name">${escapeHtml(inv.email)}</span>
+      <span class="friend-email">Invited — not on Reelarr yet</span>
+    </div>
+    <div class="friend-actions"><button class="friend-cancel">Cancel</button></div>`;
+  row.querySelector('.friend-cancel').addEventListener('click', async () => {
+    await cancelInvite(inv.email);
+    renderFriendsView();
+  });
+  return row;
+}
+
+async function cancelInvite(email) {
+  try { await fetch(`/api/friends/invite?email=${encodeURIComponent(email)}`, { method: 'DELETE' }); } catch {}
 }
 
 function friendSection(text) {
@@ -628,6 +651,7 @@ function friendMsg(res) {
   if (!res) return 'Could not send request';
   switch (res.status) {
     case 'requested':         return 'Friend request sent';
+    case 'invited':           return "They're not on Reelarr yet — we've emailed them an invite";
     case 'accepted':          return 'You are now friends';
     case 'already_friends':   return 'You are already friends';
     case 'already_requested': return 'Request already sent';
