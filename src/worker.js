@@ -1381,6 +1381,35 @@ async function traktSyncAll(env) {
   }
 }
 
+// Load a link fresh by id (so the snapshot is current, not whatever was enqueued)
+// and reconcile it. Used by the queue consumer.
+async function syncTraktLinkById(env, listId) {
+  const link = await env.DB.prepare(
+    `SELECT list_id, user_id, trakt_list_id, snapshot FROM trakt_list_links WHERE list_id = ?`
+  ).bind(listId).first();
+  if (link) await syncTraktLink(env, link); // null = unlinked since enqueue → skip
+}
+
+// Producer: fan stale links onto the queue. Just a D1 read + enqueue, so the
+// cron stays within budget regardless of link count — the consumer paces the
+// real work. Re-enqueuing an already-queued link is harmless: syncTraktLink is
+// idempotent, so a duplicate just finds nothing to do.
+const TRAKT_ENQUEUE_LIMIT = 1000;
+async function traktEnqueueStale(env) {
+  if (!env.TRAKT_ID || !env.TRAKT_QUEUE) return;
+  const { results } = await env.DB.prepare(
+    `SELECT list_id FROM trakt_list_links
+     WHERE last_synced_at IS NULL OR last_synced_at <= datetime('now', ?)
+     ORDER BY last_synced_at ASC NULLS FIRST
+     LIMIT ?`
+  ).bind(`-${TRAKT_SYNC_INTERVAL_MIN} minutes`, TRAKT_ENQUEUE_LIMIT).all();
+  const links = results || [];
+  // sendBatch accepts up to 100 messages per call.
+  for (let i = 0; i < links.length; i += 100) {
+    await env.TRAKT_QUEUE.sendBatch(links.slice(i, i + 100).map((l) => ({ body: { list_id: l.list_id } })));
+  }
+}
+
 // Start the OAuth flow — redirect the signed-in user to Trakt's consent screen.
 app.get('/api/trakt/connect', withUser, (c) => {
   const u = requireUser(c);
@@ -1552,6 +1581,24 @@ export default {
   fetch: app.fetch,
   async scheduled(event, env, ctx) {
     ctx.waitUntil(prewarm(env));
-    ctx.waitUntil(traktSyncAll(env));
+    // Fan stale Trakt links onto the queue (decoupled/retried/batched). Falls
+    // back to inline sync where the queue binding is absent (e.g. local dev).
+    ctx.waitUntil(env.TRAKT_QUEUE ? traktEnqueueStale(env) : traktSyncAll(env));
+  },
+  // Queue consumer: each message is one list to reconcile. ack on success;
+  // retry on failure (Queues redelivers up to max_retries). syncTraktLink is
+  // idempotent, so retries and duplicate deliveries are safe; a message dropped
+  // after max_retries just gets re-enqueued by the next cron (last_synced_at
+  // only advances on success).
+  async queue(batch, env, ctx) {
+    for (const msg of batch.messages) {
+      try {
+        await syncTraktLinkById(env, msg.body.list_id);
+        msg.ack();
+      } catch (e) {
+        console.warn(`[trakt] queue sync list ${msg.body && msg.body.list_id} failed: ${e.message}`);
+        msg.retry();
+      }
+    }
   },
 };
