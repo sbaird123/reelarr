@@ -285,17 +285,20 @@ async function renderListsView() {
 function ownedListCard(l) {
   const card = document.createElement('div');
   card.className = 'list-card';
+  const badges = `${l.shared ? '<span class="sync-badge">SYNCED</span> ' : ''}${l.trakt ? '<span class="sync-badge trakt">TRAKT</span> ' : ''}`;
   card.innerHTML = `
     <div class="list-card-head">
       <span class="list-card-name">${escapeHtml(l.name)}</span>
-      <span class="list-card-count">${l.shared ? '<span class="sync-badge">SYNCED</span> ' : ''}${l.count} item${l.count === 1 ? '' : 's'}</span>
+      <span class="list-card-count">${badges}${l.count} item${l.count === 1 ? '' : 's'}</span>
     </div>
     <div class="list-card-actions">
+      <button class="list-view">View</button>
       <button class="list-open">Manage</button>
       <button class="list-rename">Rename</button>
       <button class="list-delete">Delete</button>
     </div>`;
-  card.querySelector('.list-open').addEventListener('click', () => openListDetail(l));
+  card.querySelector('.list-view').addEventListener('click', () => openListDetail(l, 'view'));
+  card.querySelector('.list-open').addEventListener('click', () => openListDetail(l, 'manage'));
   card.querySelector('.list-rename').addEventListener('click', async () => {
     const name = prompt('Rename list', l.name);
     if (name && name.trim()) { await renameList(l.id, name.trim()); renderListsView(); }
@@ -310,7 +313,6 @@ function sharedListCard(l) {
   const card = document.createElement('div');
   card.className = 'list-card';
   const roleLabel = l.role === 'editor' ? 'can edit' : 'view only';
-  const openLabel = l.role === 'editor' ? 'Manage' : 'View';
   card.innerHTML = `
     <div class="list-card-head">
       <span class="list-card-name">${escapeHtml(l.name)}</span>
@@ -318,17 +320,19 @@ function sharedListCard(l) {
     </div>
     <div class="list-card-sub">by ${escapeHtml(l.owner_name || 'a friend')} · ${roleLabel}</div>
     <div class="list-card-actions">
-      <button class="list-open">${openLabel}</button>
+      <button class="list-open">View</button>
       <button class="list-leave">Leave</button>
     </div>`;
-  card.querySelector('.list-open').addEventListener('click', () => openListDetail(l));
+  card.querySelector('.list-open').addEventListener('click', () => openListDetail(l, 'view'));
   card.querySelector('.list-leave').addEventListener('click', async () => {
     if (confirm(`Leave "${l.name}"?`)) { await leaveList(l.id); renderListsView(); }
   });
   return card;
 }
 
-async function openListDetail(list) {
+// mode: 'view' = item browser (anyone with access); 'manage' = owner settings +
+// items. Owner cards offer both; shared lists always open in 'view'.
+async function openListDetail(list, mode = 'manage') {
   const body = document.getElementById('lists-body');
   document.getElementById('lists-heading').textContent = list.name;
   body.innerHTML = '<div class="picker-empty">Loading…</div>';
@@ -338,6 +342,7 @@ async function openListDetail(list) {
 
   const role = data.role || 'owner';
   const canEdit = role === 'owner' || role === 'editor';
+  const showSettings = role === 'owner' && mode === 'manage';
 
   body.innerHTML = '';
   const back = document.createElement('button');
@@ -346,13 +351,20 @@ async function openListDetail(list) {
   back.addEventListener('click', renderListsView);
   body.appendChild(back);
 
-  // Sharing + collaborator management are owner-only.
-  if (role === 'owner') {
+  if (showSettings) {
+    // Owner settings: kind, hide-watched, *arr sharing, Trakt, collaborators.
     body.appendChild(buildKindControl(list, data.kind));
     body.appendChild(buildWatchedToggle(list, data.hide_watched));
     body.appendChild(buildSharePanel(list, data.share, data.kind));
     body.appendChild(buildTraktPanel(list, data.trakt));
     body.appendChild(buildCollabPanel(list));
+  } else if (role === 'owner') {
+    // Owner viewing: a quick way into the settings.
+    const manageBtn = document.createElement('button');
+    manageBtn.className = 'list-manage-link';
+    manageBtn.textContent = '⚙ List settings & sharing';
+    manageBtn.addEventListener('click', () => openListDetail(list, 'manage'));
+    body.appendChild(manageBtn);
   } else {
     const banner = document.createElement('div');
     banner.className = 'list-role-banner';
@@ -370,20 +382,63 @@ async function openListDetail(list) {
     body.appendChild(empty);
     return;
   }
-  items.forEach((it) => {
-    const row = document.createElement('div');
-    row.className = 'list-item-row';
-    const badge = it.media_type === 'tv' ? '<span class="media-badge">TV</span>' : '';
-    const remove = canEdit ? '<button class="list-item-remove" title="Remove">&#10005;</button>' : '';
-    row.innerHTML = `<span class="list-item-title">${escapeHtml(it.title || `#${it.tmdb_id}`)}</span>${badge}${remove}`;
-    const rm = row.querySelector('.list-item-remove');
-    if (rm) rm.addEventListener('click', async () => {
-      await removeListItem(list.id, it.tmdb_id, it.media_type);
-      row.remove();
-      myLists = null;
-    });
-    body.appendChild(row);
+  items.forEach((it) => body.appendChild(buildListItemRow(list, it, canEdit)));
+}
+
+// One item row in the list detail: title + per-item actions (watch trailer,
+// IMDb, add to one of your own lists) plus remove when you can edit.
+function buildListItemRow(list, it, canEdit) {
+  const row = document.createElement('div');
+  row.className = 'list-item-row';
+  const badge = it.media_type === 'tv' ? '<span class="media-badge">TV</span>' : '';
+  row.innerHTML = `
+    <span class="list-item-title">${escapeHtml(it.title || `#${it.tmdb_id}`)}</span>${badge}
+    <div class="list-item-actions">
+      <button class="li-act li-trailer" title="Watch trailer">▶ Trailer</button>
+      <button class="li-act li-imdb" title="View on IMDb">IMDb</button>
+      <button class="li-act li-add" title="Add to one of your lists">+ List</button>
+      ${canEdit ? '<button class="list-item-remove" title="Remove">&#10005;</button>' : ''}
+    </div>`;
+  row.querySelector('.li-trailer').addEventListener('click', () => watchTitleTrailer(it));
+  row.querySelector('.li-imdb').addEventListener('click', () => openImdb(it));
+  row.querySelector('.li-add').addEventListener('click', () =>
+    openPicker({ id: it.tmdb_id, media_type: it.media_type, title: it.title }));
+  const rm = row.querySelector('.list-item-remove');
+  if (rm) rm.addEventListener('click', async () => {
+    await removeListItem(list.id, it.tmdb_id, it.media_type);
+    row.remove();
+    myLists = null;
   });
+  return row;
+}
+
+// Per-title detail (trailer key + IMDb id), cached so repeated taps don't refetch.
+const titleDetailCache = {};
+async function fetchTitleDetail(it) {
+  const type = it.media_type === 'tv' ? 'tv' : 'movie';
+  const key = `${type}:${it.tmdb_id}`;
+  if (titleDetailCache[key]) return titleDetailCache[key];
+  try {
+    const r = await fetch(`/api/title/${type}/${it.tmdb_id}`);
+    if (!r.ok) return null;
+    const d = await r.json();
+    titleDetailCache[key] = d;
+    return d;
+  } catch { return null; }
+}
+
+async function watchTitleTrailer(it) {
+  toast('Loading trailer…');
+  const d = await fetchTitleDetail(it);
+  if (!d || !d.youtube_key) { toast('No trailer available'); return; }
+  closeListsView();
+  injectItem(d);
+}
+
+async function openImdb(it) {
+  const d = await fetchTitleDetail(it);
+  if (d && d.imdb_id) window.open(`https://www.imdb.com/title/${d.imdb_id}/`, '_blank', 'noopener');
+  else toast('No IMDb link for this title');
 }
 
 // Owner-only: set whether the list is for movies, TV, or both. Drives which
