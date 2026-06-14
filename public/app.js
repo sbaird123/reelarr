@@ -125,8 +125,7 @@ function renderAuthUI() {
   if (listsBtn) listsBtn.hidden = !user;
   const friendsBtn = document.getElementById('friends-btn');
   if (friendsBtn) friendsBtn.hidden = !user;
-  const notifBtn = document.getElementById('notif-btn');
-  if (notifBtn) notifBtn.hidden = !user;
+  updateNotifBell(); // signed-in only, and on mobile only when the inbox isn't empty
   // Slim sign-in strip: only for signed-out users who haven't dismissed it.
   const banner = document.getElementById('signin-banner');
   if (banner) {
@@ -880,6 +879,9 @@ async function loadRecommendations() {
   catch { return null; }
 }
 
+// Tracks inbox size so the bell can be hidden on mobile when there's nothing.
+let notifTotal = 0;
+
 async function refreshNotifBadge() {
   if (!user) return;
   const data = await loadRecommendations();
@@ -888,7 +890,21 @@ async function refreshNotifBadge() {
   const n = data ? data.unseen : 0;
   badge.textContent = n;
   badge.classList.toggle('hidden', !n);
+  notifTotal = data && data.recommendations ? data.recommendations.length : 0;
+  updateNotifBell();
 }
+
+// Bell visibility: hidden when signed out; on narrow screens also hidden when
+// the inbox is empty, to free up header space on small phones. Wider screens
+// always show it when signed in.
+function updateNotifBell() {
+  const btn = document.getElementById('notif-btn');
+  if (!btn) return;
+  const mobile = window.matchMedia('(max-width: 640px)').matches;
+  btn.hidden = !user || (mobile && notifTotal === 0);
+}
+// Re-evaluate on rotate/resize so the bell appears/disappears as the layout flips.
+window.addEventListener('resize', updateNotifBell);
 
 async function openNotifications() {
   if (!user) { requireSignIn('Sign in to see recommendations from friends.'); return; }
@@ -933,6 +949,10 @@ async function renderNotifications() {
     row.querySelector('.notif-dismiss').addEventListener('click', async () => {
       await dismissRecommendation(r.id);
       row.remove();
+      // Keep the inbox count current so the bell hides on mobile once empty.
+      notifTotal = Math.max(0, notifTotal - 1);
+      updateNotifBell();
+      if (!notifTotal) body.innerHTML = '<div class="picker-empty">No recommendations yet. When a friend recommends a movie or show, it shows up here.</div>';
     });
     body.appendChild(row);
   });
