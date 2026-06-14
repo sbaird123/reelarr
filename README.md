@@ -4,7 +4,7 @@ TikTok-style trailer discovery for movies and TV. Swipe through upcoming movies 
 
 Reelarr is the hosted, multi-user fork of [Peekarr](https://github.com/sbaird123/peekarr). Peekarr remains the fully self-hosted Docker option with Radarr/Sonarr/Jellyfin integration; Reelarr drops the LAN integrations in favour of accounts and named lists, and targets Cloudflare Workers + D1 + KV.
 
-> **Status: pre-port.** The current code is the stripped-down Node/Express core inherited from Peekarr — TMDB feeds, SSR, watched list, skip history. The Cloudflare port, OAuth accounts, and lists come next. The full design lives in [docs/cloudflare-app-plan.md](docs/cloudflare-app-plan.md).
+> **Status: Workers + accounts, deployed.** Runs on Workers (Hono) with a KV-backed shared TMDB cache and a cron prewarm. Google OAuth sign-in with sessions and a per-user watched list in D1; signed out, the watched list falls back to localStorage and merges into your account on first sign-in. Skip history is still local (it wants write-batching before it goes server-side). Named watchlists are next. Full design: [docs/cloudflare-app-plan.md](docs/cloudflare-app-plan.md).
 
 ![Reelarr](docs/screenshot.png)
 
@@ -18,19 +18,44 @@ Reelarr is the hosted, multi-user fork of [Peekarr](https://github.com/sbaird123
 
 ## Roadmap
 
-1. Port to Cloudflare Workers + D1 + KV (shared TMDB cache — traffic scales with the catalog, not with users)
-2. OAuth accounts (Google/GitHub) with synced watched/skip history across devices
-3. Named watchlists — what "+ Add to Radarr" used to be becomes "Add to list"
+1. ~~Port to Cloudflare Workers + KV (shared TMDB cache — traffic scales with the catalog, not with users)~~ ✅
+2. ~~OAuth accounts (Google) with D1-synced watched across devices~~ ✅
+3. Named watchlists — what "+ Add to Radarr" used to be becomes "Add to list" (D1 tables exist; endpoints + UI next)
+4. Move skip history server-side with write-batching
+
+## Architecture
+
+- **Worker** (`src/worker.js`) — Hono app. TMDB feed/search + SSR for `/`, OAuth login, sessions, per-user watched.
+- **KV** (`CACHE` binding) — shared SWR cache, keyed per built feed. A cron trigger (every 8 min) prewarms the hot lists so user requests are warm reads.
+- **D1** (`DB` binding) — `users`, `sessions`, `watched`, `lists`, `list_items`. Schema in `migrations/`.
+- **Assets** (`public/`) — static frontend, served by Workers Assets. The Worker runs first only for `/` to inject the initial feed.
+- **Secrets** — `TMDB_API_KEY` (server-side), `GOOGLE_ID`/`GOOGLE_SECRET`.
 
 ## Develop locally
 
 ```sh
 npm install
-cp .env.example .env    # optional — settings UI works without this
-npm run dev
+cp .dev.vars.example .dev.vars                  # paste your TMDB key (+ OAuth creds to test login)
+npx wrangler d1 migrations apply reelarr-db --local
+npm run dev                                      # wrangler dev
 ```
 
-Runs on <http://localhost:3000>. Node 20+ required. Open <http://localhost:3000/settings> and add a **TMDB API key** (free from <https://www.themoviedb.org/settings/api>), then visit `/` and start swiping.
+Get a free TMDB key from <https://www.themoviedb.org/settings/api>. The dev server runs on the port wrangler prints (default <http://localhost:8787>). Sign-in needs a Google OAuth app with `http://localhost:8787/auth/google` registered as a redirect URI.
+
+## Deploy
+
+One-time setup:
+
+```sh
+npx wrangler login
+npx wrangler kv namespace create CACHE            # paste the returned id into wrangler.jsonc
+npx wrangler d1 create reelarr-db                 # paste the returned database_id into wrangler.jsonc
+npx wrangler d1 migrations apply reelarr-db --remote
+npx wrangler secret put TMDB_API_KEY              # then GOOGLE_ID, GOOGLE_SECRET
+npm run deploy
+```
+
+Register the Google OAuth app with `https://<deployed-host>/auth/google` as a redirect URI. Workers Paid plan recommended (the cron trigger and request volume fit comfortably in its included usage).
 
 ## Gestures
 

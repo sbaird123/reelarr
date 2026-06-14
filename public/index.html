@@ -36,13 +36,33 @@
       <!-- options injected by JS -->
     </select>
     <button id="search-btn" title="Search">&#128269;</button>
-    <a id="settings-btn" href="/settings" title="Settings" aria-label="Settings">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="3"/>
-        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+    <button id="lists-btn" title="My Lists" hidden>
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
+        <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
       </svg>
-    </a>
+    </button>
+    <button id="friends-btn" title="Friends" hidden>
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+      </svg>
+      <span id="friends-badge" class="hidden">0</span>
+    </button>
+    <button id="notif-btn" title="Notifications" hidden>
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+      </svg>
+      <span id="notif-badge" class="hidden">0</span>
+    </button>
+    <div id="auth-slot"></div>
   </header>
+
+  <!-- Signed-out sign-in strip (always-visible entry point; hidden once signed in) -->
+  <div id="signin-banner" class="hidden">
+    <span class="signin-banner-text">Sign in to save lists, add friends &amp; sync your watchlist.</span>
+    <button id="signin-banner-btn">Sign in</button>
+    <button id="signin-banner-close" title="Dismiss">&#10005;</button>
+  </div>
 
   <!-- Search overlay -->
   <div id="search-overlay" class="hidden">
@@ -51,6 +71,60 @@
       <button id="search-close">&#10005;</button>
     </div>
     <div id="search-results"></div>
+  </div>
+
+  <!-- Lists overlay (My Lists manager) -->
+  <div id="lists-overlay" class="hidden">
+    <div id="lists-bar">
+      <h2 id="lists-heading">My Lists</h2>
+      <button id="lists-close">&#10005;</button>
+    </div>
+    <div id="lists-body"></div>
+  </div>
+
+  <!-- Notifications overlay -->
+  <div id="notif-overlay" class="hidden">
+    <div id="notif-bar">
+      <h2>Notifications</h2>
+      <button id="notif-close">&#10005;</button>
+    </div>
+    <div id="notif-body"></div>
+  </div>
+
+  <!-- Recommend-to-friend bottom sheet -->
+  <div id="rec-overlay" class="hidden">
+    <div id="rec-sheet">
+      <div id="rec-head">
+        <span id="rec-title">Recommend to a friend</span>
+        <button id="rec-close">&#10005;</button>
+      </div>
+      <input id="rec-note" type="text" placeholder="Add a note (optional)…" autocomplete="off" maxlength="300" />
+      <div id="rec-friends"></div>
+    </div>
+  </div>
+
+  <!-- Add-to-list bottom sheet -->
+  <div id="picker-overlay" class="hidden">
+    <div id="picker-sheet">
+      <div id="picker-head">
+        <span id="picker-title">Add to list</span>
+        <button id="picker-close">&#10005;</button>
+      </div>
+      <div id="picker-lists"></div>
+      <form id="picker-new">
+        <input id="picker-new-name" type="text" placeholder="New list name…" autocomplete="off" maxlength="100" />
+        <button type="submit" id="picker-new-btn">Create</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Friends overlay -->
+  <div id="friends-overlay" class="hidden">
+    <div id="friends-bar">
+      <h2>Friends</h2>
+      <button id="friends-close">&#10005;</button>
+    </div>
+    <div id="friends-body"></div>
   </div>
 
   <!-- Main swiper -->

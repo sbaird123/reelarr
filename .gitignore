@@ -2,11 +2,9 @@ node_modules/
 .env
 .env.local
 
-# SQLite
-data.db
-data.db-journal
-data.db-wal
-data.db-shm
+# Cloudflare / wrangler
+.dev.vars
+.wrangler/
 
 # Editor / OS
 .DS_Store
@@ -17,3 +15,6 @@ data.db-shm
 # Logs
 *.log
 npm-debug.log*
+
+# Local-only notes / work-in-progress docs (not for the repo)
+WORKLOG.md

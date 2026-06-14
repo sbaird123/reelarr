@@ -1,0 +1,60 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "reelarr",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-06-01",
+  "observability": { "enabled": true },
+
+  // Canonical public origin. Used to build a stable Trakt OAuth redirect URI for
+  // background token refresh (cron has no request context to derive it from).
+  "vars": { "APP_ORIGIN": "https://reelarr.app" },
+
+  // Static frontend in ./public. The Worker runs first only for "/" (so it can
+  // SSR an initial feed into index.html); every other path is served
+  // asset-first, falling through to the Worker for unmatched routes (the /api/*
+  // endpoints). The Worker reads the raw index.html via the ASSETS binding.
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/"]
+  },
+
+  // Shared TMDB feed cache. One namespace; the cron prewarm writes the hot
+  // lists so user requests are mostly warm KV reads.
+  // Create with:  npx wrangler kv namespace create CACHE
+  // then paste the returned id below.
+  "kv_namespaces": [
+    { "binding": "CACHE", "id": "6e01f26816c249158351162f34d4d527" }
+  ],
+
+  // Accounts: users, sessions, watched, lists. Migrations live in ./migrations.
+  // Create with:  npx wrangler d1 create reelarr-db
+  // then paste the returned database_id below, and apply migrations:
+  //   npx wrangler d1 migrations apply reelarr-db --local   (dev)
+  //   npx wrangler d1 migrations apply reelarr-db --remote   (prod)
+  "d1_databases": [
+    { "binding": "DB", "database_name": "reelarr-db", "database_id": "331c9d3c-851d-4d6a-9aa5-8588b19fd7fa" }
+  ],
+
+  // Keep the hot lists warm for everyone. Every 8 minutes mirrors the old
+  // setInterval prewarm cadence.
+  "triggers": {
+    "crons": ["*/8 * * * *"]
+  },
+
+  // Transactional email (friend requests, "list shared with you") via Cloudflare
+  // Email Sending. reelarr.app is onboarded; SPF/DKIM/DMARC are published under
+  // the cf-bounce.reelarr.app return-path subdomain (DMARC p=reject, aligned). A
+  // CLI test send was received in the inbox (13 Jun 2026). For local dev that
+  // actually delivers, temporarily add "remote": true here and remove before deploy.
+  "send_email": [
+    { "name": "EMAIL" }
+  ]
+
+  // Secrets (set with `npx wrangler secret put <NAME>`, never committed):
+  //   TMDB_API_KEY   — TMDB v3 key, server-side only
+  //   GOOGLE_ID      — Google OAuth client id
+  //   GOOGLE_SECRET  — Google OAuth client secret
+  //   TRAKT_ID       — Trakt OAuth client id     (trakt.tv/oauth/applications)
+  //   TRAKT_SECRET   — Trakt OAuth client secret
+}
