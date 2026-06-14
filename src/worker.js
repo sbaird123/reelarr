@@ -1387,7 +1387,7 @@ async function syncTraktLinkById(env, listId) {
   const link = await env.DB.prepare(
     `SELECT list_id, user_id, trakt_list_id, snapshot FROM trakt_list_links WHERE list_id = ?`
   ).bind(listId).first();
-  if (link) await syncTraktLink(env, link); // null = unlinked since enqueue → skip
+  return link ? syncTraktLink(env, link) : null; // null = unlinked since enqueue → skip
 }
 
 // Producer: fan stale links onto the queue. Just a D1 read + enqueue, so the
@@ -1408,6 +1408,7 @@ async function traktEnqueueStale(env) {
   for (let i = 0; i < links.length; i += 100) {
     await env.TRAKT_QUEUE.sendBatch(links.slice(i, i + 100).map((l) => ({ body: { list_id: l.list_id } })));
   }
+  if (links.length) console.log(`[trakt] enqueued ${links.length} link(s) for background sync`);
 }
 
 // Start the OAuth flow — redirect the signed-in user to Trakt's consent screen.
@@ -1593,7 +1594,8 @@ export default {
   async queue(batch, env, ctx) {
     for (const msg of batch.messages) {
       try {
-        await syncTraktLinkById(env, msg.body.list_id);
+        const r = await syncTraktLinkById(env, msg.body.list_id);
+        if (r && r.ok) console.log(`[trakt] queue synced list ${msg.body.list_id}: trakt +${r.addedTrakt}/-${r.removedTrakt}, reelarr +${r.addedReelarr}/-${r.removedReelarr}`);
         msg.ack();
       } catch (e) {
         console.warn(`[trakt] queue sync list ${msg.body && msg.body.list_id} failed: ${e.message}`);
