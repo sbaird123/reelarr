@@ -42,6 +42,20 @@
     "crons": ["*/8 * * * *"]
   },
 
+  // Background Trakt sync fan-out. The cron is a cheap producer (enqueues stale
+  // links); the consumer paces the actual Trakt work in small batches with
+  // retries and bounded concurrency, so a large link count can't blow the
+  // cron's CPU/subrequest budget. Create with:
+  //   npx wrangler queues create reelarr-trakt-sync
+  "queues": {
+    "producers": [
+      { "queue": "reelarr-trakt-sync", "binding": "TRAKT_QUEUE" }
+    ],
+    "consumers": [
+      { "queue": "reelarr-trakt-sync", "max_batch_size": 10, "max_batch_timeout": 30, "max_retries": 3, "max_concurrency": 5 }
+    ]
+  },
+
   // Transactional email (friend requests, "list shared with you") via Cloudflare
   // Email Sending. reelarr.app is onboarded; SPF/DKIM/DMARC are published under
   // the cf-bounce.reelarr.app return-path subdomain (DMARC p=reject, aligned). A
