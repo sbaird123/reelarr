@@ -599,7 +599,7 @@ async function renderTrakt(list, trakt, panel) {
     box.innerHTML = `
       <p class="share-help">Two-way sync this list with a Trakt list or your Trakt watchlist — so Plex, Kometa, SIMKL and others can read it too. Syncs automatically in the background.</p>
       <button class="trakt-connect">Connect Trakt account</button>`;
-    box.querySelector('.trakt-connect').addEventListener('click', () => { location.href = '/api/trakt/connect'; });
+    box.querySelector('.trakt-connect').addEventListener('click', () => { location.href = `/api/trakt/connect?list=${list.id}`; });
     return;
   }
 
@@ -1826,10 +1826,13 @@ function hydrateInitial(payload) {
   loadWatchedLocal(); // instant, so first paint can filter without waiting on auth
 
   // Surface the Trakt OAuth result (set by the /auth/trakt redirect), then strip
-  // the param so a refresh doesn't re-toast.
-  const tp = new URLSearchParams(location.search).get('trakt');
+  // the params so a refresh doesn't re-toast. If a list id came back, reopen its
+  // Manage view once lists load (below) so the user can finish linking.
+  const traktParams = new URLSearchParams(location.search);
+  const tp = traktParams.get('trakt');
+  const traktReturnList = traktParams.get('list');
   if (tp) {
-    toast(tp === 'connected' ? 'Trakt connected'
+    toast(tp === 'connected' ? (traktReturnList ? 'Trakt connected — now choose what to sync' : 'Trakt connected')
       : tp === 'signin' ? 'Sign in first, then connect Trakt'
       : 'Trakt connection failed');
     history.replaceState(null, '', location.pathname);
@@ -1855,6 +1858,12 @@ function hydrateInitial(payload) {
       setInterval(() => { if (user) { refreshNotifBadge(); refreshFriendBadge(); } }, 60000);
       await loadLists(true);     // so the user's lists appear as feed tabs
       renderTabs();
+      // Returning from a Trakt connect — drop the user back on that list's
+      // Manage view so they can pick a target and finish linking.
+      if (tp === 'connected' && traktReturnList) {
+        const l = (myLists || []).find((x) => String(x.id) === String(traktReturnList));
+        if (l) { document.getElementById('lists-overlay').classList.remove('hidden'); openListDetail(l); }
+      }
     }
   });
 })();

@@ -1162,6 +1162,9 @@ app.delete('/api/recommendations/:id', withUser, async (c) => {
 // stores, so no external-id mapping is needed (unlike the Radarr/Sonarr exports).
 const TRAKT_API = 'https://api.trakt.tv';
 const TRAKT_AUTHORIZE = 'https://trakt.tv/oauth/authorize';
+// Trakt sits behind Cloudflare and 403s requests with no User-Agent (Workers'
+// fetch sends none by default) — so every Trakt call must set one.
+const TRAKT_UA = 'Reelarr/1.0 (+https://reelarr.app)';
 
 // The redirect URI must match what's registered on the Trakt app exactly, and
 // must be stable for background token refresh (which has no request context).
@@ -1170,7 +1173,7 @@ function traktRedirectUri(env) {
 }
 
 function traktHeaders(env, accessToken) {
-  const h = { 'Content-Type': 'application/json', 'trakt-api-version': '2', 'trakt-api-key': env.TRAKT_ID };
+  const h = { 'Content-Type': 'application/json', 'User-Agent': TRAKT_UA, 'trakt-api-version': '2', 'trakt-api-key': env.TRAKT_ID };
   if (accessToken) h['Authorization'] = `Bearer ${accessToken}`;
   return h;
 }
@@ -1179,7 +1182,7 @@ function traktHeaders(env, accessToken) {
 async function traktTokenExchange(env, params) {
   const res = await fetch(`${TRAKT_API}/oauth/token`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'User-Agent': TRAKT_UA },
     body: JSON.stringify({
       ...params,
       client_id: env.TRAKT_ID,
@@ -1187,7 +1190,11 @@ async function traktTokenExchange(env, params) {
       redirect_uri: traktRedirectUri(env),
     }),
   });
-  if (!res.ok) throw new Error(`trakt token ${res.status}`);
+  if (!res.ok) {
+    let detail = '';
+    try { detail = (await res.text()).slice(0, 300); } catch {}
+    throw new Error(`trakt token ${res.status} redirect=${traktRedirectUri(env)} body=${detail}`);
+  }
   return res.json(); // { access_token, refresh_token, expires_in, created_at, ... }
 }
 
@@ -1344,6 +1351,10 @@ app.get('/api/trakt/connect', withUser, (c) => {
   const state = newToken().slice(0, 24);
   const https = new URL(c.req.url).protocol === 'https:';
   setCookie(c, 'trakt_state', state, { httpOnly: true, secure: https, sameSite: 'Lax', path: '/', maxAge: 600 });
+  // Remember which list the user was setting up, so the callback can drop them
+  // back on its Manage view to finish linking.
+  const ret = c.req.query('list');
+  if (ret) setCookie(c, 'trakt_list', ret, { httpOnly: true, secure: https, sameSite: 'Lax', path: '/', maxAge: 600 });
   const url = new URL(TRAKT_AUTHORIZE);
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('client_id', c.env.TRAKT_ID);
@@ -1355,22 +1366,30 @@ app.get('/api/trakt/connect', withUser, (c) => {
 // OAuth callback — verify state, exchange the code, store tokens.
 app.get('/auth/trakt', withUser, async (c) => {
   const u = requireUser(c);
-  if (!u) return c.redirect('/?trakt=signin');
+  if (!u) { console.warn('[trakt] callback: no session user'); return c.redirect('/?trakt=signin'); }
   const code = c.req.query('code');
   const state = c.req.query('state');
   const expected = getCookie(c, 'trakt_state');
+  const ret = getCookie(c, 'trakt_list');
   deleteCookie(c, 'trakt_state', { path: '/' });
-  if (!code || !state || state !== expected) return c.redirect('/?trakt=failed');
+  deleteCookie(c, 'trakt_list', { path: '/' });
+  const back = (status) => c.redirect(`/?trakt=${status}${ret ? `&list=${encodeURIComponent(ret)}` : ''}`);
+  if (!code || !state || state !== expected) {
+    console.warn(`[trakt] callback bad state: hasCode=${!!code} state=${state} expected=${expected}`);
+    return back('failed');
+  }
   try {
     const tok = await traktTokenExchange(c.env, { grant_type: 'authorization_code', code });
     await storeTraktTokens(c.env, u.id, tok);
     try {
       const me = await traktApi(c.env, tok.access_token, 'GET', '/users/me');
       if (me && me.username) await c.env.DB.prepare(`UPDATE trakt_accounts SET username = ? WHERE user_id = ?`).bind(me.username, u.id).run();
-    } catch {}
-    return c.redirect('/?trakt=connected');
-  } catch {
-    return c.redirect('/?trakt=failed');
+    } catch (e) { console.warn(`[trakt] /users/me failed: ${e.message}`); }
+    console.log(`[trakt] connected user ${u.id}`);
+    return back('connected');
+  } catch (e) {
+    console.warn(`[trakt] token exchange failed: ${e.message}`);
+    return back('failed');
   }
 });
 
@@ -1391,7 +1410,7 @@ app.delete('/api/trakt', withUser, async (c) => {
     try {
       await fetch(`${TRAKT_API}/oauth/revoke`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'User-Agent': TRAKT_UA },
         body: JSON.stringify({ token: row.access_token, client_id: c.env.TRAKT_ID, client_secret: c.env.TRAKT_SECRET }),
       });
     } catch {}
