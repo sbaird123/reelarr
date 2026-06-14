@@ -631,16 +631,22 @@ async function renderTrakt(list, trakt, panel) {
   }
 
   // Connected, but this list isn't linked yet — pick a target.
+  // Disconnect is only offered when nothing is synced; otherwise the user is
+  // told to unlink first (the backend enforces this too).
+  const disconnectCtl = status.links > 0
+    ? `<div class="trakt-note">To disconnect Trakt, first unlink your ${status.links} synced list${status.links === 1 ? '' : 's'}.</div>`
+    : `<button class="trakt-disconnect">Disconnect Trakt</button>`;
   box.innerHTML = `
-    <p class="share-help">Link this list to Trakt as <strong>${escapeHtml(status.username || 'your account')}</strong>. Changes sync both ways automatically.</p>
+    <div class="trakt-status">Connected as <strong>${escapeHtml(status.username || 'your account')}</strong> · this list isn’t synced yet.</div>
+    <label class="trakt-label">Choose what to sync this list with, then tap Link &amp; sync:</label>
     <select class="trakt-target">
       <option value="new">Create a new Trakt list</option>
       <option value="watchlist">My Trakt watchlist</option>
     </select>
     <div class="trakt-actions">
       <button class="trakt-link">Link &amp; sync</button>
-      <button class="trakt-disconnect">Disconnect Trakt</button>
-    </div>`;
+    </div>
+    <div class="trakt-disconnect-row">${disconnectCtl}</div>`;
 
   const sel = box.querySelector('.trakt-target');
   // Offer the user's existing Trakt lists as link targets too.
@@ -674,9 +680,11 @@ async function renderTrakt(list, trakt, panel) {
     myLists = null;
     openListDetail(list);
   });
-  box.querySelector('.trakt-disconnect').addEventListener('click', async () => {
-    if (!confirm('Disconnect your Trakt account? This unlinks all your lists from Trakt.')) return;
-    await disconnectTrakt();
+  const disc = box.querySelector('.trakt-disconnect');
+  if (disc) disc.addEventListener('click', async () => {
+    if (!confirm('Disconnect your Trakt account?')) return;
+    const ok = await disconnectTrakt();
+    if (!ok) toast('Unlink your synced lists first');
     openListDetail(list);
   });
 }
@@ -693,7 +701,8 @@ async function unlinkTrakt(listId) {
   try { await fetch(`/api/lists/${listId}/trakt`, { method: 'DELETE' }); } catch {}
 }
 async function disconnectTrakt() {
-  try { await fetch('/api/trakt', { method: 'DELETE' }); } catch {}
+  try { const r = await fetch('/api/trakt', { method: 'DELETE' }); return r.ok; }
+  catch { return false; }
 }
 
 async function createList(name, kind) {

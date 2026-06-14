@@ -600,6 +600,10 @@ html, body {
 }
 .trakt-target option, .trakt-target optgroup { background: #161616; color: #f0f0f0; }
 .trakt-meta { font-size: .8rem; color: var(--muted); margin: 4px 0 2px; }
+.trakt-status { font-size: .85rem; color: var(--text); margin-bottom: 8px; }
+.trakt-label { display: block; font-size: .8rem; font-weight: 600; color: var(--muted); margin: 4px 0; }
+.trakt-note { font-size: .8rem; color: var(--muted); margin-top: 10px; }
+.trakt-disconnect-row { margin-top: 10px; }
 .trakt-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 .trakt-connect, .trakt-sync, .trakt-link {
   background: var(--accent);

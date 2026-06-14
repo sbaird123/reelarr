@@ -1436,13 +1436,22 @@ app.get('/api/trakt', withUser, async (c) => {
   const u = requireUser(c);
   if (!u) return c.json({ error: 'not signed in' }, 401);
   const row = await c.env.DB.prepare(`SELECT username FROM trakt_accounts WHERE user_id = ?`).bind(u.id).first();
-  return c.json({ configured: !!c.env.TRAKT_ID, connected: !!row, username: row ? row.username : null });
+  let links = 0;
+  if (row) {
+    const cnt = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM trakt_list_links WHERE user_id = ?`).bind(u.id).first();
+    links = cnt ? cnt.n : 0;
+  }
+  return c.json({ configured: !!c.env.TRAKT_ID, connected: !!row, username: row ? row.username : null, links });
 });
 
-// Disconnect — revoke the token and drop the account + its links.
+// Disconnect — revoke the token and drop the account. Refused while any lists
+// are still synced, so a disconnect can't silently orphan/clear links: the user
+// unlinks each synced list first (an explicit, reversible step).
 app.delete('/api/trakt', withUser, async (c) => {
   const u = requireUser(c);
   if (!u) return c.json({ error: 'not signed in' }, 401);
+  const cnt = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM trakt_list_links WHERE user_id = ?`).bind(u.id).first();
+  if (cnt && cnt.n > 0) return c.json({ error: 'unlink your synced lists first', links: cnt.n }, 409);
   const row = await c.env.DB.prepare(`SELECT access_token FROM trakt_accounts WHERE user_id = ?`).bind(u.id).first();
   if (row) {
     try {
@@ -1454,7 +1463,6 @@ app.delete('/api/trakt', withUser, async (c) => {
     } catch {}
   }
   await c.env.DB.prepare(`DELETE FROM trakt_accounts WHERE user_id = ?`).bind(u.id).run();
-  await c.env.DB.prepare(`DELETE FROM trakt_list_links WHERE user_id = ?`).bind(u.id).run();
   return c.json({ ok: true });
 });
 
