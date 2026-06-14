@@ -896,6 +896,35 @@ html, body {
 }
 .list-item-remove:hover { color: #ff6b6b; }
 
+/* Per-item actions in the list view: watch trailer / IMDb / + List / remove.
+   Wraps under the title on narrow screens so nothing gets cut off. */
+.list-item-row { flex-wrap: wrap; }
+.list-item-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; flex-shrink: 0; }
+.li-act {
+  background: rgba(255,255,255,.08);
+  border: 1px solid rgba(255,255,255,.16);
+  color: var(--text);
+  border-radius: 7px;
+  padding: 5px 9px;
+  font-size: .72rem; font-weight: 600;
+  cursor: pointer; white-space: nowrap;
+  transition: background .15s;
+}
+.li-act:hover { background: rgba(255,255,255,.18); }
+.li-trailer { color: var(--accent2); border-color: rgba(255,107,53,.35); }
+
+.list-manage-link {
+  align-self: flex-start;
+  background: rgba(255,255,255,.08);
+  border: 1px solid rgba(255,255,255,.16);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: .82rem; font-weight: 600;
+  cursor: pointer;
+}
+.list-manage-link:hover { background: rgba(255,255,255,.18); }
+
 .picker-empty { color: var(--muted); text-align: center; padding: 20px; font-size: .9rem; }
 
 /* Add-to-list bottom sheet. */
@@ -965,6 +994,8 @@ html, body {
   border-radius: 6px;
   vertical-align: middle;
 }
+/* Trakt sync badge — red, to distinguish from the green *arr SYNCED badge. */
+.sync-badge.trakt { background: rgba(237,28,36,.18); color: #ff5a5f; }
 .share-panel {
   background: rgba(255,255,255,.04);
   border: 1px solid rgba(255,255,255,.1);

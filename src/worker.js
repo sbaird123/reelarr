@@ -451,6 +451,20 @@ app.get('/api/shows/search', async (c) => {
   }
 });
 
+// Single-title detail for the list "View" — trailer key + IMDb id for a tmdb id.
+// Public like the feed/search routes (TMDB-derived data, no user info). Reuses
+// the same KV-cached enrichment as the list feed, plus the external-id lookup.
+app.get('/api/title/:type/:id', async (c) => {
+  const type = c.req.param('type') === 'tv' ? 'tv' : 'movie';
+  const id = parseInt(c.req.param('id'), 10);
+  if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+  const item = await enrichTitle(c.env, type, id);
+  if (!item) return c.json({ error: 'not found' }, 404);
+  const ids = await externalIds(c.env, type, id);
+  c.header('Cache-Control', 'public, max-age=3600');
+  return c.json({ ...item, imdb_id: ids.imdb_id || null });
+});
+
 // ── OAuth login ───────────────────────────────────────────────────────────────
 // The middleware's mount path doubles as the OAuth redirect URI — so Google must
 // have http://localhost:8787/auth/google (dev) and
@@ -627,7 +641,8 @@ app.get('/api/lists', withUser, async (c) => {
   const owned = await c.env.DB.prepare(
     `SELECT l.id, l.name, l.kind, l.hide_watched, l.created_at, COUNT(li.tmdb_id) AS count,
             'owner' AS role, NULL AS owner_name,
-            CASE WHEN l.share_token IS NOT NULL THEN 1 ELSE 0 END AS shared
+            CASE WHEN l.share_token IS NOT NULL THEN 1 ELSE 0 END AS shared,
+            EXISTS(SELECT 1 FROM trakt_list_links t WHERE t.list_id = l.id) AS trakt
      FROM lists l LEFT JOIN list_items li ON li.list_id = l.id
      WHERE l.user_id = ?
      GROUP BY l.id
@@ -635,7 +650,7 @@ app.get('/api/lists', withUser, async (c) => {
   ).bind(u.id).all();
   const shared = await c.env.DB.prepare(
     `SELECT l.id, l.name, l.kind, l.hide_watched, l.created_at, COUNT(li.tmdb_id) AS count,
-            c.role AS role, ownr.name AS owner_name, 0 AS shared
+            c.role AS role, ownr.name AS owner_name, 0 AS shared, 0 AS trakt
      FROM list_collaborators c
      JOIN lists l ON l.id = c.list_id
      JOIN users ownr ON ownr.id = l.user_id
