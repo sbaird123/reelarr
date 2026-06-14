@@ -184,10 +184,14 @@ function closePicker() {
 async function renderPickerLists() {
   const box = document.getElementById('picker-lists');
   box.innerHTML = '<div class="picker-empty">Loading…</div>';
-  // Only lists you can add to — your own, or shared lists where you're an editor.
-  const lists = (await loadLists(true)).filter((l) => l.role === 'owner' || l.role === 'editor');
+  // Only lists you can add to — your own or shared lists where you're an editor —
+  // and only ones whose kind matches the item: a TV title can't go in a movies-
+  // only list (or vice versa); 'both' lists always qualify.
+  const mt = pickerItem && pickerItem.media_type === 'tv' ? 'tv' : 'movie';
+  const lists = (await loadLists(true)).filter((l) =>
+    (l.role === 'owner' || l.role === 'editor') && (l.kind === 'both' || l.kind === mt));
   if (!lists.length) {
-    box.innerHTML = '<div class="picker-empty">No lists yet — create one below.</div>';
+    box.innerHTML = `<div class="picker-empty">No ${mt === 'tv' ? 'TV' : 'movie'} lists yet — create one below.</div>`;
     return;
   }
   box.innerHTML = '';
