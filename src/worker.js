@@ -891,7 +891,7 @@ app.post('/api/lists/:id/collaborators', withUser, async (c) => {
     return c.json({ error: 'you can only share with confirmed friends' }, 403);
   await c.env.DB.prepare(
     `INSERT INTO list_collaborators (list_id, user_id, role) VALUES (?, ?, ?)
-     ON CONFLICT(list_id, user_id) DO UPDATE SET role = excluded.role`
+     ON CONFLICT(list_id, user_id) DO UPDATE SET role = excluded.role, seen = 0`
   ).bind(list.id, friendId, role).run();
 
   const friend = await c.env.DB.prepare(`SELECT email FROM users WHERE id = ?`).bind(friendId).first();
@@ -1138,7 +1138,20 @@ app.get('/api/recommendations', withUser, async (c) => {
      WHERE r.to_user_id = ? ORDER BY r.created_at DESC LIMIT 100`
   ).bind(u.id).all();
   const recs = results || [];
-  return c.json({ recommendations: recs, unseen: recs.filter((r) => !r.seen).length });
+  // Unseen "X shared a list with you" alerts (transient — only surfaced until
+  // the panel is opened, unlike recommendations which persist until dismissed).
+  const shares = (await c.env.DB.prepare(
+    `SELECT l.id AS list_id, l.name AS list_name, c.role, c.created_at, ownr.name AS from_name
+     FROM list_collaborators c
+     JOIN lists l ON l.id = c.list_id
+     JOIN users ownr ON ownr.id = l.user_id
+     WHERE c.user_id = ? AND c.seen = 0 ORDER BY c.created_at DESC LIMIT 50`
+  ).bind(u.id).all()).results || [];
+  return c.json({
+    recommendations: recs,
+    shares,
+    unseen: recs.filter((r) => !r.seen).length + shares.length,
+  });
 });
 
 app.post('/api/recommendations/seen', withUser, async (c) => {
@@ -1146,6 +1159,10 @@ app.post('/api/recommendations/seen', withUser, async (c) => {
   if (!u) return c.json({ error: 'not signed in' }, 401);
   await c.env.DB.prepare(
     `UPDATE recommendations SET seen = 1 WHERE to_user_id = ? AND seen = 0`
+  ).bind(u.id).run();
+  // Opening the panel also clears shared-list alerts.
+  await c.env.DB.prepare(
+    `UPDATE list_collaborators SET seen = 1 WHERE user_id = ? AND seen = 0`
   ).bind(u.id).run();
   return c.json({ ok: true });
 });

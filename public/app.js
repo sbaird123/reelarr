@@ -891,7 +891,9 @@ async function refreshNotifBadge() {
   const n = data ? data.unseen : 0;
   badge.textContent = n;
   badge.classList.toggle('hidden', !n);
-  notifTotal = data && data.recommendations ? data.recommendations.length : 0;
+  const recCount = data && data.recommendations ? data.recommendations.length : 0;
+  const shareCount = data && data.shares ? data.shares.length : 0;
+  notifTotal = recCount + shareCount;
   updateNotifBell();
 }
 
@@ -926,11 +928,30 @@ async function renderNotifications() {
   body.innerHTML = '<div class="picker-empty">Loading…</div>';
   const data = await loadRecommendations();
   const recs = (data && data.recommendations) || [];
+  const shares = (data && data.shares) || [];
   body.innerHTML = '';
-  if (!recs.length) {
-    body.innerHTML = '<div class="picker-empty">No recommendations yet. When a friend recommends a movie or show, it shows up here.</div>';
+  if (!recs.length && !shares.length) {
+    body.innerHTML = '<div class="picker-empty">No notifications yet. Recommendations and lists friends share with you show up here.</div>';
     return;
   }
+  // Shared-with-you lists (unseen alerts) sit at the top.
+  shares.forEach((s) => {
+    const row = document.createElement('div');
+    row.className = 'notif-row unseen';
+    row.innerHTML = `
+      <div class="notif-meta">
+        <span class="notif-text"><strong>${escapeHtml(s.from_name || 'A friend')}</strong> shared the list <strong>${escapeHtml(s.list_name || 'a list')}</strong> with you</span>
+      </div>
+      <div class="notif-actions">
+        <button class="notif-open">Open</button>
+      </div>`;
+    row.querySelector('.notif-open').addEventListener('click', () => {
+      closeNotifications();
+      document.getElementById('lists-overlay').classList.remove('hidden');
+      openListDetail({ id: s.list_id, name: s.list_name });
+    });
+    body.appendChild(row);
+  });
   recs.forEach((r) => {
     const row = document.createElement('div');
     row.className = 'notif-row' + (r.seen ? '' : ' unseen');
