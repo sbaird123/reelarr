@@ -836,9 +836,12 @@ app.post('/api/lists/:id/items', withUser, async (c) => {
   const { tmdbId, mediaType = 'movie', title } = await c.req.json().catch(() => ({}));
   const id = parseInt(tmdbId, 10);
   if (!Number.isInteger(id)) return c.json({ error: 'tmdbId required' }, 400);
-  await c.env.DB.prepare(
+  const mt = mediaType === 'tv' ? 'tv' : 'movie';
+  const res = await c.env.DB.prepare(
     `INSERT OR IGNORE INTO list_items (list_id, tmdb_id, media_type, title) VALUES (?, ?, ?, ?)`
-  ).bind(list.id, id, mediaType === 'tv' ? 'tv' : 'movie', title || null).run();
+  ).bind(list.id, id, mt, title || null).run();
+  // Push-on-change: mirror a genuine add to the linked Trakt target instantly.
+  if (res.meta.changes) c.executionCtx.waitUntil(traktPushItem(c.env, list.id, { tmdb_id: id, media_type: mt }, false));
   return c.json({ ok: true });
 });
 
@@ -851,9 +854,11 @@ app.delete('/api/lists/:id/items/:tmdbId', withUser, async (c) => {
   const id = parseInt(c.req.param('tmdbId'), 10);
   if (!Number.isInteger(id)) return c.json({ error: 'invalid tmdbId' }, 400);
   const mediaType = c.req.query('mediaType') === 'tv' ? 'tv' : 'movie';
-  await c.env.DB.prepare(
+  const res = await c.env.DB.prepare(
     `DELETE FROM list_items WHERE list_id = ? AND tmdb_id = ? AND media_type = ?`
   ).bind(list.id, id, mediaType).run();
+  // Push-on-change: mirror a genuine removal to the linked Trakt target instantly.
+  if (res.meta.changes) c.executionCtx.waitUntil(traktPushItem(c.env, list.id, { tmdb_id: id, media_type: mediaType }, true));
   return c.json({ ok: true });
 });
 
@@ -1326,6 +1331,30 @@ async function syncTraktLink(env, link) {
     addedTrakt: toAddTrakt.length, removedTrakt: toRemoveTrakt.length,
     addedReelarr: toAddReelarr.length, removedReelarr: toRemoveReelarr.length,
   };
+}
+
+// Push a single Reelarr-side add/remove straight to the linked Trakt target so
+// outbound sync is instant (the 30-min poll then mainly handles inbound Trakt
+// changes). The snapshot is intentionally NOT updated here: syncTraktLink's diff
+// is self-correcting, so whether this push lands or not, the next full sync
+// reconciles — a failed push simply retries then. Never throws (fire-and-forget
+// via waitUntil).
+async function traktPushItem(env, listId, item, remove) {
+  try {
+    if (!env.TRAKT_ID) return;
+    const link = await env.DB.prepare(
+      `SELECT user_id, trakt_list_id FROM trakt_list_links WHERE list_id = ?`
+    ).bind(listId).first();
+    if (!link) return; // list isn't synced — nothing to do
+    const listRow = await env.DB.prepare(`SELECT kind FROM lists WHERE id = ?`).bind(listId).first();
+    const kind = listRow ? listRow.kind : 'both';
+    if (!(kind === 'both' || (kind === 'movie' && item.media_type === 'movie') || (kind === 'tv' && item.media_type === 'tv'))) return;
+    const token = await traktAccessToken(env, link.user_id);
+    if (!token) return;
+    await traktApi(env, token, 'POST', traktWritePath(link.trakt_list_id, remove), traktItemBody([item]));
+  } catch (e) {
+    console.warn(`[trakt] push ${remove ? 'remove' : 'add'} list ${listId} failed (reconciles on next sync): ${e.message}`);
+  }
 }
 
 // Cron entry: background-sync links that have gone stale. Each link is 2-4

@@ -609,7 +609,7 @@ async function renderTrakt(list, trakt, panel) {
       : `a Trakt list${trakt.slug ? ` (“${escapeHtml(trakt.slug)}”)` : ''}`;
     const last = trakt.last_synced_at ? `Last synced ${timeAgo(trakt.last_synced_at)}` : 'Not synced yet';
     box.innerHTML = `
-      <p class="share-help">Syncing with ${target} as <strong>${escapeHtml(status.username || 'your account')}</strong>. Auto-syncs about every half hour — use <em>Sync now</em> for an instant update.</p>
+      <p class="share-help">Syncing with ${target} as <strong>${escapeHtml(status.username || 'your account')}</strong>. Your edits push to Trakt instantly; changes made on Trakt appear here within ~30 min — or hit <em>Sync now</em>.</p>
       <div class="trakt-meta">${escapeHtml(last)}</div>
       <div class="trakt-actions">
         <button class="trakt-sync">Sync now</button>
