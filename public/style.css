@@ -645,23 +645,15 @@ html, body {
   border-radius: 50%;
   object-fit: cover;
   background: var(--surface);
+  cursor: pointer;
+  transition: box-shadow .15s, opacity .15s;
 }
+#avatar:hover { opacity: .85; box-shadow: 0 0 0 2px rgba(255,255,255,.5); }
 .avatar-fallback {
   display: flex; align-items: center; justify-content: center;
   font-weight: 800; font-size: .9rem; color: #fff;
   background: var(--accent2);
 }
-#logout-btn {
-  background: rgba(255,255,255,.1);
-  border: 1px solid rgba(255,255,255,.18);
-  color: var(--text);
-  border-radius: 20px;
-  padding: 6px 12px;
-  font-size: .8rem;
-  font-weight: 600;
-  cursor: pointer;
-}
-#logout-btn:hover { background: rgba(255,255,255,.18); }
 
 /* ── Lists ──────────────────────────────────────────────────────────────── */
 #lists-btn {
