@@ -1328,15 +1328,24 @@ async function syncTraktLink(env, link) {
   };
 }
 
-// Cron entry: sync links not touched in the last ~10 min. Capped per run; with
-// the Trakt POST limit of 1/sec this is plenty at current scale.
+// Cron entry: background-sync links that have gone stale. Each link is 2-4
+// sequential Trakt round-trips, so the per-run LIMIT + staleness window are what
+// keep a single scheduled invocation inside its CPU/wall-clock budget — NOT
+// Trakt's rate limits (those are per-user and trivially met here). The manual
+// "Sync now" button covers anyone who wants an instant update, so the background
+// cadence can be relaxed. At larger scale the next steps are: push-on-change
+// (sync immediately when a synced list is edited) + a slower pull-only poll, and
+// eventually moving the fan-out to Cloudflare Queues instead of one cron loop.
+const TRAKT_SYNC_INTERVAL_MIN = 30;
+const TRAKT_SYNC_PER_RUN = 50;
 async function traktSyncAll(env) {
   if (!env.TRAKT_ID) return;
   const { results } = await env.DB.prepare(
     `SELECT list_id, user_id, trakt_list_id, snapshot FROM trakt_list_links
-     WHERE last_synced_at IS NULL OR last_synced_at <= datetime('now', '-10 minutes')
-     LIMIT 50`
-  ).all();
+     WHERE last_synced_at IS NULL OR last_synced_at <= datetime('now', ?)
+     ORDER BY last_synced_at ASC NULLS FIRST
+     LIMIT ?`
+  ).bind(`-${TRAKT_SYNC_INTERVAL_MIN} minutes`, TRAKT_SYNC_PER_RUN).all();
   for (const link of results || []) {
     try { await syncTraktLink(env, link); }
     catch (e) { console.warn(`[trakt] sync list ${link.list_id} failed: ${e.message}`); }
