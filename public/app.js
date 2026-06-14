@@ -138,11 +138,12 @@ function renderAuthUI() {
     slot.innerHTML = `
       <div id="account">
         ${user.avatar
-          ? `<img id="avatar" src="${escapeHtml(user.avatar)}" alt="" referrerpolicy="no-referrer" />`
-          : `<div id="avatar" class="avatar-fallback">${escapeHtml(initial)}</div>`}
-        <button id="logout-btn" title="Sign out">Sign out</button>
+          ? `<img id="avatar" src="${escapeHtml(user.avatar)}" alt="Sign out" title="Sign out" referrerpolicy="no-referrer" />`
+          : `<div id="avatar" class="avatar-fallback" title="Sign out">${escapeHtml(initial)}</div>`}
       </div>`;
-    document.getElementById('logout-btn').addEventListener('click', logout);
+    // Tap the avatar to sign out (confirm guards against a mis-tap).
+    const avatarEl = document.getElementById('avatar');
+    if (avatarEl) avatarEl.addEventListener('click', () => { if (confirm('Sign out?')) logout(); });
   } else {
     slot.innerHTML = `<button id="login-btn">Sign in</button>`;
     document.getElementById('login-btn').addEventListener('click', () => {
