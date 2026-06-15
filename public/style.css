@@ -925,6 +925,18 @@ html, body {
 }
 .list-manage-link:hover { background: rgba(255,255,255,.18); }
 
+.list-play-all {
+  align-self: stretch;
+  background: var(--accent);
+  border: none;
+  color: #fff;
+  border-radius: 10px;
+  padding: 11px 14px;
+  font-size: .9rem; font-weight: 700;
+  cursor: pointer;
+}
+.list-play-all:hover { background: #c0070f; }
+
 .picker-empty { color: var(--muted); text-align: center; padding: 20px; font-size: .9rem; }
 
 /* Add-to-list bottom sheet. */

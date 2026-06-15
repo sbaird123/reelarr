@@ -382,7 +382,33 @@ async function openListDetail(list, mode = 'manage') {
     body.appendChild(empty);
     return;
   }
+  // Play the whole list as a swiper feed (replaces the old per-list top-nav tab).
+  const playAll = document.createElement('button');
+  playAll.className = 'list-play-all';
+  playAll.textContent = '▶ Play all as a feed';
+  playAll.addEventListener('click', () => playListFeed(list, data.kind, items));
+  body.appendChild(playAll);
   items.forEach((it) => body.appendChild(buildListItemRow(list, it, canEdit)));
+}
+
+// Load a list into the main swiper as a continuous feed. Picks the screen from
+// the list's kind (or, for a 'both' list, from what it actually contains).
+function playListFeed(list, kind, items) {
+  let mode = currentMode;
+  if (kind === 'tv') mode = 'tv';
+  else if (kind === 'movie') mode = 'movies';
+  else {
+    const hasTv = items.some((i) => i.media_type === 'tv');
+    const hasMovie = items.some((i) => i.media_type !== 'tv');
+    if (hasTv && !hasMovie) mode = 'tv';
+    else if (hasMovie && !hasTv) mode = 'movies';
+  }
+  currentMode = mode;
+  document.querySelectorAll('.mode-btn').forEach((b) => b.classList.toggle('active', b.dataset.mode === mode));
+  currentList = `list:${list.id}`;
+  closeListsView();
+  renderTabs();
+  loadFeed(true);
 }
 
 // One item row in the list detail: title + per-item actions (watch trailer,
@@ -1226,13 +1252,11 @@ function requireSignIn(reason) {
 }
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
-// Built-in feed tabs for the mode, plus the user's lists whose kind matches it
-// (a 'both' list shows on both screens). List tabs are keyed `list:<id>`.
+// Just the built-in feed tabs for the mode. Lists are no longer surfaced in the
+// top nav (kept the header clean) — browse them in My Lists → View, where
+// "Play all" loads one into the swiper as a feed (currentList = `list:<id>`).
 function tabsForMode() {
-  const wantMovie = currentMode === 'movies';
-  const lists = (myLists || []).filter((l) =>
-    wantMovie ? (l.kind === 'movie' || l.kind === 'both') : (l.kind === 'tv' || l.kind === 'both'));
-  return TABS[currentMode].concat(lists.map((l) => ({ list: `list:${l.id}`, label: l.name })));
+  return TABS[currentMode];
 }
 
 function renderTabs() {
