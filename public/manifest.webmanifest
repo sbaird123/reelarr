@@ -1,0 +1,12 @@
+{
+  "name": "Reelarr — Movie & TV Trailers",
+  "short_name": "Reelarr",
+  "description": "Discover movie & TV trailers, TikTok-style. Swipe upcoming films and shows, build watchlists, sync with Radarr/Sonarr/Trakt, and share with friends.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
+  "icons": [
+    { "src": "/icon.svg", "type": "image/svg+xml", "sizes": "any", "purpose": "any" }
+  ]
+}

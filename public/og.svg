@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#0a0a0a"/>
+  <rect width="1200" height="10" fill="#e50914"/>
+  <g transform="translate(110,215)">
+    <rect width="200" height="200" rx="44" fill="#e50914"/>
+    <text x="100" y="152" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="132" font-weight="800" fill="#ffffff" text-anchor="middle">R</text>
+  </g>
+  <text x="350" y="300" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="100" font-weight="800" fill="#ffffff">Reelarr</text>
+  <text x="354" y="372" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="40" font-weight="500" fill="#b3b3b3">Discover movie &amp; TV trailers, TikTok-style.</text>
+</svg>

@@ -3,8 +3,46 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <title>Reelarr</title>
+  <title>Reelarr — Discover Movie &amp; TV Trailers</title>
+  <meta name="description" content="Discover movie &amp; TV trailers, TikTok-style. Swipe upcoming films and shows, build watchlists, sync with Radarr/Sonarr/Trakt, and share with friends." />
+  <link rel="canonical" href="https://reelarr.app/" />
+  <meta name="robots" content="index,follow" />
+  <meta name="theme-color" content="#0a0a0a" />
+
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%23e50914'/><text x='16' y='23' font-family='-apple-system,Segoe UI,sans-serif' font-size='20' font-weight='800' fill='white' text-anchor='middle'>R</text></svg>" />
+  <link rel="apple-touch-icon" href="/icon.svg" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+
+  <!-- Open Graph (Facebook, LinkedIn, iMessage, Slack, etc.) -->
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Reelarr" />
+  <meta property="og:title" content="Reelarr — Discover Movie &amp; TV Trailers" />
+  <meta property="og:description" content="Discover movie &amp; TV trailers, TikTok-style. Swipe upcoming films and shows, build watchlists, sync with Radarr/Sonarr/Trakt, and share with friends." />
+  <meta property="og:url" content="https://reelarr.app/" />
+  <meta property="og:image" content="https://reelarr.app/og.svg" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="Reelarr — discover movie and TV trailers" />
+
+  <!-- Twitter / X card -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Reelarr — Discover Movie &amp; TV Trailers" />
+  <meta name="twitter:description" content="Discover movie &amp; TV trailers, TikTok-style. Swipe, build watchlists, sync with Radarr/Sonarr/Trakt, and share with friends." />
+  <meta name="twitter:image" content="https://reelarr.app/og.svg" />
+
+  <!-- Structured data -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebApplication",
+    "name": "Reelarr",
+    "url": "https://reelarr.app/",
+    "description": "Discover movie & TV trailers, TikTok-style. Swipe upcoming films and shows, build watchlists, sync with Radarr/Sonarr/Trakt, and share with friends.",
+    "applicationCategory": "EntertainmentApplication",
+    "operatingSystem": "Web",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+  }
+  </script>
 
   <!-- Preconnect to origins we fetch from on first paint -->
   <link rel="preconnect" href="https://i.ytimg.com" crossorigin />
@@ -18,6 +56,18 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
+  <!-- Semantic H1 for crawlers; visually hidden (the app's own header is the visible brand). -->
+  <h1 class="sr-only">Reelarr — discover movie &amp; TV show trailers, TikTok-style</h1>
+
+  <!-- Fallback for crawlers/users without JavaScript. -->
+  <noscript>
+    <div style="max-width:640px;margin:80px auto;padding:0 24px;font-family:-apple-system,Segoe UI,sans-serif;color:#f0f0f0;text-align:center">
+      <h2 style="color:#e50914">Reelarr</h2>
+      <p>Reelarr is a fast, TikTok-style way to discover movie and TV show trailers — swipe through what's upcoming, build watchlists, sync them with Radarr, Sonarr &amp; Trakt, and share with friends.</p>
+      <p>Please enable JavaScript to use Reelarr.</p>
+    </div>
+  </noscript>
+
   <!-- Top bar -->
   <header id="topbar">
     <div id="logo">Reelarr</div>

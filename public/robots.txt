@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /auth/
+Disallow: /list/
+
+Sitemap: https://reelarr.app/sitemap.xml
