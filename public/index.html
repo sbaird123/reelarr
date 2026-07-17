@@ -106,7 +106,19 @@
       <span id="notif-badge" class="hidden">0</span>
     </button>
     <div id="auth-slot"></div>
+    <!-- Mobile-only: collapses search / lists / friends / notifications / account
+         into one menu so the header controls stop overlapping on small phones. -->
+    <button id="menu-btn" title="Menu" aria-haspopup="true" aria-expanded="false">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+      </svg>
+      <span id="menu-dot" class="hidden"></span>
+    </button>
   </header>
+
+  <!-- Mobile menu dropdown (populated by JS) + tap-away backdrop -->
+  <div id="menu-backdrop" class="hidden"></div>
+  <div id="topbar-menu" class="hidden" role="menu"></div>
 
   <!-- Signed-out sign-in strip (always-visible entry point; hidden once signed in) -->
   <div id="signin-banner" class="hidden">
