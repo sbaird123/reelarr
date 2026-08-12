@@ -90,6 +90,35 @@ function pickTrailer(videos) {
   return trailer || null;
 }
 
+// ── Language preference ───────────────────────────────────────────────────────
+// TMDB's popularity lists are global, so foreign-language titles (K-dramas,
+// anime, telenovelas…) often dominate — especially on TV. We soft-prefer the
+// app's language: keep the feed mostly English but still sprinkle in some
+// foreign titles rather than dropping them entirely. Applied per TMDB page
+// before the expensive trailer enrichment (so we don't enrich titles we cut).
+const PREFERRED_LANG = 'en';
+
+function balanceByLanguage(results, lang = PREFERRED_LANG) {
+  const native = [], foreign = [];
+  for (const r of results) ((r.original_language === lang) ? native : foreign).push(r);
+  // If a page has no preferred-language titles at all, leave it — better to show
+  // something than an empty feed.
+  if (native.length === 0) return results;
+  // Keep at most ~1 foreign per 3 native (the most popular ones — TMDB already
+  // sorts by popularity), then spread them evenly through the page.
+  const keep = foreign.slice(0, Math.ceil(native.length / 3));
+  if (keep.length === 0) return native;
+  const step = native.length / keep.length;
+  const out = [];
+  let fi = 0, nextForeignAt = step;
+  for (let i = 0; i < native.length; i++) {
+    out.push(native[i]);
+    if (fi < keep.length && i + 1 >= nextForeignAt) { out.push(keep[fi++]); nextForeignAt += step; }
+  }
+  while (fi < keep.length) out.push(keep[fi++]);
+  return out;
+}
+
 // ── Feed builders ─────────────────────────────────────────────────────────────
 async function buildMovieFeed(env, { list, page }) {
   const data = await tmdbRaw(env, `/movie/${list}`, { page });
@@ -100,6 +129,7 @@ async function buildMovieFeed(env, { list, page }) {
     const today = new Date().toISOString().slice(0, 10);
     movies = movies.filter((m) => m.release_date && m.release_date >= today);
   }
+  movies = balanceByLanguage(movies);
   const enriched = await Promise.all(movies.map(async (movie) => {
     try {
       const videos = await tmdbRaw(env, `/movie/${movie.id}/videos`);
@@ -143,7 +173,7 @@ async function buildTvFeed(env, { list, page }) {
   } else {
     data = await tmdbRaw(env, `/tv/${list}`, { page });
   }
-  const shows = data.results || [];
+  const shows = balanceByLanguage(data.results || []);
   const enriched = await Promise.all(shows.map(async (show) => {
     try {
       const videos = await tmdbRaw(env, `/tv/${show.id}/videos`);
