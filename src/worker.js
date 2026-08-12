@@ -612,8 +612,13 @@ async function externalIds(env, kind, tmdbId) {
     const d = await tmdbRaw(env, `/${kind}/${tmdbId}/external_ids`);
     ids = { imdb_id: d.imdb_id || null, tvdb_id: d.tvdb_id || null };
   } catch { /* leave nulls; the item is just skipped in the export */ }
-  // 30-day TTL — external ids don't change. (Negative results re-checked monthly.)
-  try { await env.CACHE.put(key, JSON.stringify(ids), { expirationTtl: 60 * 60 * 24 * 30 }); }
+  // Fully-resolved mappings are effectively immutable → cache 30 days. But an
+  // upcoming title often has no TheTVDB id yet; cache those misses for just
+  // 2 days so the show drops into Sonarr soon after TVDB adds the mapping,
+  // rather than being pinned out of the export for a month.
+  const resolved = ids.imdb_id && ids.tvdb_id;
+  const ttl = resolved ? 60 * 60 * 24 * 30 : 60 * 60 * 24 * 2;
+  try { await env.CACHE.put(key, JSON.stringify(ids), { expirationTtl: ttl }); }
   catch {}
   return ids;
 }
@@ -789,8 +794,11 @@ app.get('/list/:token/radarr.json', async (c) => {
   return c.json(mapped.filter(Boolean));
 });
 
-// Sonarr Custom List format: [{ title, tvdbId, tmdbId, imdbId }]. Only TV; items
-// with neither a tvdbId nor an imdbId are skipped (Sonarr can't match them).
+// Sonarr Custom List format: [{ title, tvdbId, tmdbId, imdbId }]. Only TV.
+// Sonarr's custom-list import matches series ONLY on tvdbId (imdb/tmdb are
+// ignored), and a tvdbId of 0 makes it fuzzy-match by title — which can add the
+// WRONG show. So skip any item without a real tvdbId; it's just not importable
+// until TheTVDB maps it (upcoming titles resolve on their own once TVDB adds it).
 app.get('/list/:token/sonarr.json', async (c) => {
   const list = await listByToken(c.env, c.req.param('token'));
   if (!list) return c.json({ error: 'not found' }, 404);
@@ -799,10 +807,10 @@ app.get('/list/:token/sonarr.json', async (c) => {
   ).bind(list.id).all();
   const mapped = await Promise.all((results || []).map(async (it) => {
     const ids = await externalIds(c.env, 'tv', it.tmdb_id);
-    if (!ids.tvdb_id && !ids.imdb_id) return null;
+    if (!ids.tvdb_id) return null;
     return {
       title: it.title || `tmdb:${it.tmdb_id}`,
-      tvdbId: ids.tvdb_id || 0,
+      tvdbId: ids.tvdb_id,
       tmdbId: it.tmdb_id,
       imdbId: ids.imdb_id || '',
     };
