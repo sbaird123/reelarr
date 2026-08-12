@@ -94,8 +94,8 @@ function pickTrailer(videos) {
 // TMDB's popularity lists are global, so foreign-language titles (K-dramas,
 // anime, telenovelas…) often dominate — especially on TV. We soft-prefer the
 // app's language: keep the feed mostly English but still sprinkle in some
-// foreign titles rather than dropping them entirely. Applied per TMDB page
-// before the expensive trailer enrichment (so we don't enrich titles we cut).
+// foreign titles rather than dropping them entirely. Applied to the enriched
+// (trailer-having) results so the on-screen ratio is what's actually controlled.
 const PREFERRED_LANG = 'en';
 
 function balanceByLanguage(results, lang = PREFERRED_LANG) {
@@ -129,7 +129,6 @@ async function buildMovieFeed(env, { list, page }) {
     const today = new Date().toISOString().slice(0, 10);
     movies = movies.filter((m) => m.release_date && m.release_date >= today);
   }
-  movies = balanceByLanguage(movies);
   const enriched = await Promise.all(movies.map(async (movie) => {
     try {
       const videos = await tmdbRaw(env, `/movie/${movie.id}/videos`);
@@ -143,13 +142,18 @@ async function buildMovieFeed(env, { list, page }) {
         poster_path: poster(movie.poster_path),
         backdrop_path: backdrop(movie.backdrop_path),
         vote_average: movie.vote_average,
+        original_language: movie.original_language,
         youtube_key: trailer.key,
         media_type: 'movie',
       };
     } catch { return null; }
   }));
+  // Balance AFTER enrichment so the language ratio reflects the titles that
+  // actually survive (English network/reality shows often lack a TMDB trailer
+  // and drop out — balancing earlier would leave the page more foreign than it
+  // looks). See balanceByLanguage.
   return {
-    results: enriched.filter(Boolean),
+    results: balanceByLanguage(enriched.filter(Boolean)),
     total_pages: data.total_pages,
     page: data.page,
   };
@@ -173,7 +177,7 @@ async function buildTvFeed(env, { list, page }) {
   } else {
     data = await tmdbRaw(env, `/tv/${list}`, { page });
   }
-  const shows = balanceByLanguage(data.results || []);
+  const shows = data.results || [];
   const enriched = await Promise.all(shows.map(async (show) => {
     try {
       const videos = await tmdbRaw(env, `/tv/${show.id}/videos`);
@@ -187,13 +191,16 @@ async function buildTvFeed(env, { list, page }) {
         poster_path: poster(show.poster_path),
         backdrop_path: backdrop(show.backdrop_path),
         vote_average: show.vote_average,
+        original_language: show.original_language,
         youtube_key: trailer.key,
         media_type: 'tv',
       };
     } catch { return null; }
   }));
+  // Balance AFTER enrichment so the ratio reflects titles that actually survive
+  // (many English shows lack a TMDB trailer and drop out). See balanceByLanguage.
   return {
-    results: enriched.filter(Boolean),
+    results: balanceByLanguage(enriched.filter(Boolean)),
     total_pages: data.total_pages,
     page: data.page,
   };
