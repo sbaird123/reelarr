@@ -1401,7 +1401,13 @@ function buildSlide(item, index) {
         <span>${year}</span>
         ${isTv ? '<span class="media-badge">TV</span>' : ''}
       </div>
-      <div class="slide-overview">${escapeHtml(item.overview)}</div>
+      ${(item.genres && item.genres.length)
+        ? `<div class="slide-genres">${item.genres.map((g) => `<span class="genre-chip">${escapeHtml(g)}</span>`).join('')}</div>`
+        : ''}
+      <div class="slide-overview-wrap">
+        <div class="slide-overview">${escapeHtml(item.overview)}</div>
+        <button class="overview-more" hidden>more</button>
+      </div>
       <div class="slide-actions">
         <button class="btn-watched">Watched</button>
         <button class="btn-list">+ List</button>
@@ -1422,6 +1428,25 @@ function buildSlide(item, index) {
     await markWatched(item);
     toast(`"${item.title}" marked as watched`);
     advanceOrLoad();
+  });
+
+  // Expandable overview: clamped to 3 lines; tap the text or "more" to expand
+  // into a scrollable panel. While expanded, swiping inside the text scrolls it
+  // instead of changing slides (swiper-no-swiping).
+  const ov = slide.querySelector('.slide-overview');
+  const moreBtn = slide.querySelector('.overview-more');
+  const toggleOverview = () => {
+    const open = slide.classList.toggle('overview-open');
+    ov.classList.toggle('swiper-no-swiping', open);
+    moreBtn.textContent = open ? 'less' : 'more';
+    if (!open) ov.scrollTop = 0;
+  };
+  ov.addEventListener('click', () => { if (!moreBtn.hidden) toggleOverview(); });
+  moreBtn.addEventListener('click', toggleOverview);
+  // Only offer "more" when the text is actually truncated. The slide isn't in
+  // the DOM yet, so measure on the next frame after the caller appends it.
+  requestAnimationFrame(() => {
+    if (ov.scrollHeight > ov.clientHeight + 1) moreBtn.hidden = false;
   });
 
   slide.querySelector('.btn-list').addEventListener('click', () => openPicker(item));

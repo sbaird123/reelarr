@@ -429,15 +429,61 @@ html, body {
   font-weight: 700;
 }
 
+.slide-genres {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.genre-chip {
+  font-size: .72rem;
+  font-weight: 600;
+  color: #e8e8e8;
+  background: rgba(255,255,255,.12);
+  border: 1px solid rgba(255,255,255,.18);
+  border-radius: 12px;
+  padding: 2px 9px;
+  text-shadow: 0 1px 3px rgba(0,0,0,.8);
+}
+
+.slide-overview-wrap { position: relative; }
+
 .slide-overview {
-  font-size: .85rem;
-  color: rgba(255,255,255,.75);
-  line-height: 1.4;
+  font-size: .92rem;
+  color: rgba(255,255,255,.85);
+  line-height: 1.45;
+  text-shadow: 0 1px 4px rgba(0,0,0,.85);
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  cursor: pointer;
 }
+/* Expanded: full text in a scrollable panel, capped so the action buttons stay
+   on screen. */
+.overview-open .slide-overview {
+  display: block;
+  -webkit-line-clamp: unset;
+  max-height: 38vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  font-size: .98rem;
+  color: #fff;
+}
+.overview-open .slide-info {
+  background: linear-gradient(to top, rgba(0,0,0,.96) 0%, rgba(0,0,0,.82) 70%, transparent 100%);
+}
+.overview-more {
+  background: none;
+  border: none;
+  padding: 2px 0 0;
+  color: #fff;
+  font-size: .82rem;
+  font-weight: 700;
+  cursor: pointer;
+  opacity: .9;
+  text-shadow: 0 1px 4px rgba(0,0,0,.85);
+}
+.overview-more:hover { opacity: 1; text-decoration: underline; }
 
 /* action buttons */
 .slide-actions {

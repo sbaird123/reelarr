@@ -90,6 +90,24 @@ function pickTrailer(videos) {
   return trailer || null;
 }
 
+// ── Genres ────────────────────────────────────────────────────────────────────
+// TMDB list/search results carry genre_ids; detail responses carry genres[].
+// The ids are stable and shared between movie & TV where they overlap, so one
+// static map covers both (saves a /genre/list round trip per build).
+const GENRES = {
+  28: 'Action', 12: 'Adventure', 16: 'Animation', 35: 'Comedy', 80: 'Crime',
+  99: 'Documentary', 18: 'Drama', 10751: 'Family', 14: 'Fantasy', 36: 'History',
+  27: 'Horror', 10402: 'Music', 9648: 'Mystery', 10749: 'Romance', 878: 'Sci-Fi',
+  10770: 'TV Movie', 53: 'Thriller', 10752: 'War', 37: 'Western',
+  10759: 'Action & Adventure', 10762: 'Kids', 10763: 'News', 10764: 'Reality',
+  10765: 'Sci-Fi & Fantasy', 10766: 'Soap', 10767: 'Talk', 10768: 'War & Politics',
+};
+
+function genreNames(t) {
+  const ids = t.genre_ids || (t.genres || []).map((g) => g.id);
+  return ids.map((id) => GENRES[id]).filter(Boolean).slice(0, 3);
+}
+
 // ── Language preference ───────────────────────────────────────────────────────
 // TMDB's popularity lists are global, so foreign-language titles (K-dramas,
 // anime, telenovelas…) often dominate — especially on TV. We soft-prefer the
@@ -143,6 +161,7 @@ async function buildMovieFeed(env, { list, page }) {
         backdrop_path: backdrop(movie.backdrop_path),
         vote_average: movie.vote_average,
         original_language: movie.original_language,
+        genres: genreNames(movie),
         youtube_key: trailer.key,
         media_type: 'movie',
       };
@@ -192,6 +211,7 @@ async function buildTvFeed(env, { list, page }) {
         backdrop_path: backdrop(show.backdrop_path),
         vote_average: show.vote_average,
         original_language: show.original_language,
+        genres: genreNames(show),
         youtube_key: trailer.key,
         media_type: 'tv',
       };
@@ -221,6 +241,7 @@ async function buildSearch(env, kind, q) {
         poster_path: poster(it.poster_path),
         backdrop_path: backdrop(it.backdrop_path),
         vote_average: it.vote_average,
+        genres: genreNames(it),
         youtube_key: trailer ? trailer.key : null,
         media_type: kind === 'tv' ? 'tv' : 'movie',
       };
@@ -752,7 +773,7 @@ app.get('/api/lists/:id', withUser, async (c) => {
 // without one. Per-title enrichment is cached hard in KV (details/trailers are
 // near-immutable), so adds/removes reflect immediately without refetching the rest.
 async function enrichTitle(env, kind, tmdbId) {
-  const key = `title:${kind}:${tmdbId}`;
+  const key = `title:v2:${kind}:${tmdbId}`; // v2 = includes genres
   try { const hit = await env.CACHE.get(key, { type: 'json' }); if (hit) return hit; }
   catch {}
   let out = null;
@@ -767,6 +788,7 @@ async function enrichTitle(env, kind, tmdbId) {
       poster_path: poster(d.poster_path),
       backdrop_path: backdrop(d.backdrop_path),
       vote_average: d.vote_average,
+      genres: genreNames(d),
       youtube_key: trailer ? trailer.key : null,
       media_type: kind,
     };
