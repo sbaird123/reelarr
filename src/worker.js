@@ -139,12 +139,24 @@ function balanceByLanguage(results, lang = PREFERRED_LANG) {
 
 // ── Feed builders ─────────────────────────────────────────────────────────────
 async function buildMovieFeed(env, { list, page }) {
-  const data = await tmdbRaw(env, `/movie/${list}`, { page });
+  const today = new Date().toISOString().slice(0, 10);
+  // TMDB's /movie/upcoming is mostly films already released in some other
+  // country (its window is per-region release dates, but results carry the
+  // global primary date) — filtering those out left pages with 0–4 titles.
+  // Ask /discover for films whose first release worldwide is still ahead, by
+  // popularity, so every page is genuinely upcoming and full.
+  const data = list === 'upcoming'
+    ? await tmdbRaw(env, '/discover/movie', {
+        page,
+        'primary_release_date.gte': today,
+        sort_by: 'popularity.desc',
+        include_adult: 'false',
+        include_video: 'false',
+      })
+    : await tmdbRaw(env, `/movie/${list}`, { page });
   let movies = data.results || [];
-  // TMDB's /movie/upcoming happily returns old re-releases and indie second
-  // runs — drop anything that's already out so "Upcoming" actually means it.
+  // Belt and braces: never show something that's already out as "Upcoming".
   if (list === 'upcoming') {
-    const today = new Date().toISOString().slice(0, 10);
     movies = movies.filter((m) => m.release_date && m.release_date >= today);
   }
   const enriched = await Promise.all(movies.map(async (movie) => {
@@ -251,7 +263,9 @@ async function buildSearch(env, kind, q) {
 }
 
 // ── Cache key + feed wrappers ─────────────────────────────────────────────────
-function feedKey(kind, list, page) { return `feed:${kind}:${list}:${page}`; }
+// Bump the version when the item shape or a list's source changes, so stale
+// pages aren't served for up to an hour. v2: genres + discover-based upcoming.
+function feedKey(kind, list, page) { return `feed:v2:${kind}:${list}:${page}`; }
 
 function cachedMovieFeed(env, ctx, list, page) {
   return swr(env, ctx, feedKey('movie', list, page), POLICY_LIST,
@@ -437,7 +451,7 @@ function esc(s) {
 }
 
 // SSR for / — inject an initial feed so the first paint isn't a blank swiper.
-// The cron keeps feed:movie:upcoming:1 warm, so this is usually one KV read.
+// The cron keeps the movie/upcoming page-1 feed warm, so this is usually one KV read.
 app.get('/', async (c) => {
   const ctx = c.executionCtx;
   let initialFeed = null;
